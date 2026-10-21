@@ -27,6 +27,10 @@
 #include <SDL3/SDL_properties.h>
 #include <cstdlib>
 #include <cstring>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+#endif
 
 sdl_WebGPU_Impl::sdl_WebGPU_Impl(SDL_Window* _window)
 {
@@ -65,6 +69,18 @@ WGPUSurface sdl_WebGPU_Impl::createSurface(WGPUInstance instance, std::string& e
 		errorMessage = "wgpuInstanceCreateSurface failed";
 	}
 	return surface;
+#elif defined(__EMSCRIPTEN__)
+	// The browser draws to the canvas of the page (platforms/emscripten/shell.html)
+	WGPUEmscriptenSurfaceSourceCanvasHTMLSelector canvasSource = WGPU_EMSCRIPTEN_SURFACE_SOURCE_CANVAS_HTML_SELECTOR_INIT;
+	canvasSource.selector = WGPUStringView{"#canvas", WGPU_STRLEN};
+	WGPUSurfaceDescriptor surfaceDesc = WGPU_SURFACE_DESCRIPTOR_INIT;
+	surfaceDesc.nextInChain = &canvasSource.chain;
+	WGPUSurface surface = wgpuInstanceCreateSurface(instance, &surfaceDesc);
+	if (surface == nullptr)
+	{
+		errorMessage = "wgpuInstanceCreateSurface failed for the canvas";
+	}
+	return surface;
 #else
 	// Windows and macOS are not done yet (plan: work order step 9)
 	errorMessage = "The WebGPU backend is not supported on this platform yet";
@@ -74,6 +90,15 @@ WGPUSurface sdl_WebGPU_Impl::createSurface(WGPUInstance instance, std::string& e
 
 void sdl_WebGPU_Impl::getDrawableSize(int* w, int* h)
 {
+#if defined(__EMSCRIPTEN__)
+	// The surface texture has the size of the canvas backing store. The soft fullscreen mode
+	// (main_sdl.cpp) changes that size for the device pixel ratio, and the SDL window size can
+	// be different.
+	if (emscripten_get_canvas_element_size("#canvas", w, h) == EMSCRIPTEN_RESULT_SUCCESS)
+	{
+		return;
+	}
+#endif
 	SDL_GetWindowSizeInPixels(window, w, h);
 }
 
@@ -94,6 +119,9 @@ bool sdl_WebGPU_VideoDriverIsSupported()
 	}
 	const char* waylandDisplay = getenv("WAYLAND_DISPLAY");
 	return waylandDisplay != nullptr && waylandDisplay[0] != '\0';
+#elif defined(__EMSCRIPTEN__)
+	// The page creates the device before the game starts (platforms/emscripten/webgpu-postjs.js)
+	return MAIN_THREAD_EM_ASM_INT({ return Module['preinitializedWebGPUDevice'] ? 1 : 0; }) != 0;
 #else
 	return false;
 #endif

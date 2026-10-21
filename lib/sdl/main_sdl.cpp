@@ -466,6 +466,13 @@ std::vector<video_backend> wzAvailableGfxBackends()
 #if defined(__EMSCRIPTEN__)
 // EMSCRIPTEN:
 	// - Only supports OpenGL ES (WebGL) backend
+#   if defined(WZ_WEBGPU_ENABLED)
+	// - Or WebGPU first, if the page created a WebGPU device
+	if (sdl_WebGPU_VideoDriverIsSupported())
+	{
+		availableBackends.push_back(video_backend::webgpu);
+	}
+#   endif
 	availableBackends.push_back(video_backend::opengles);
 #elif defined(WZ_OS_WIN)
 // WINDOWS:

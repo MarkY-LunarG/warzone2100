@@ -1,8 +1,13 @@
 # Provides the Dawn WebGPU implementation for the WebGPU backend.
 #
-# Use an installed Dawn if find_package(Dawn) finds one. Otherwise, fetch and
-# build Dawn at a pinned commit. To use a local Dawn checkout instead of a new
-# clone, set FETCHCONTENT_SOURCE_DIR_DAWN to that checkout.
+# Native builds: use an installed Dawn if find_package(Dawn) finds one. Otherwise, fetch and
+# build Dawn at a pinned commit. To use a local Dawn checkout instead of a new clone, set
+# FETCHCONTENT_SOURCE_DIR_DAWN to that checkout.
+#
+# Emscripten builds: use Emscripten's emdawnwebgpu port (Dawn's webgpu.h for the browser).
+# The shader build needs the host tools tint and wz_webgpu_spirv_prep, which cannot be built
+# with the Emscripten toolchain. Set WZ_WEBGPU_HOST_TOOLS_DIR to a native WebGPU build folder
+# that has them (for example, the "build" folder).
 #
 # On success, the target dawn::webgpu_dawn exists and WZ_DAWN_FOUND is TRUE.
 
@@ -10,6 +15,30 @@ set(WZ_DAWN_FOUND FALSE)
 
 if(CMAKE_VERSION VERSION_LESS 3.28)
 	message(FATAL_ERROR "WZ_ENABLE_BACKEND_WEBGPU requires CMake 3.28 or later, because Dawn does")
+endif()
+
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+	set(WZ_WEBGPU_HOST_TOOLS_DIR "" CACHE PATH "Native WebGPU build folder that has the host tools tint and wz_webgpu_spirv_prep")
+	find_program(WZ_WEBGPU_TINT NAMES tint PATHS "${WZ_WEBGPU_HOST_TOOLS_DIR}/_deps/dawn-build" NO_DEFAULT_PATH)
+	find_program(WZ_WEBGPU_SPIRV_PREP NAMES wz_webgpu_spirv_prep PATHS "${WZ_WEBGPU_HOST_TOOLS_DIR}/build_tools" NO_DEFAULT_PATH)
+	if(NOT WZ_WEBGPU_TINT OR NOT WZ_WEBGPU_SPIRV_PREP)
+		message(FATAL_ERROR "WZ_ENABLE_BACKEND_WEBGPU for Emscripten requires WZ_WEBGPU_HOST_TOOLS_DIR: a native WebGPU build folder that has _deps/dawn-build/tint and build_tools/wz_webgpu_spirv_prep")
+	endif()
+	# The same target names as a native build, so that data/CMakeLists.txt needs no change
+	add_executable(tint IMPORTED GLOBAL)
+	set_target_properties(tint PROPERTIES IMPORTED_LOCATION "${WZ_WEBGPU_TINT}")
+	add_executable(wz_webgpu_spirv_prep IMPORTED GLOBAL)
+	set_target_properties(wz_webgpu_spirv_prep PROPERTIES IMPORTED_LOCATION "${WZ_WEBGPU_SPIRV_PREP}")
+
+	add_library(wz_emdawnwebgpu INTERFACE)
+	target_compile_options(wz_emdawnwebgpu INTERFACE "--use-port=emdawnwebgpu")
+	target_link_options(wz_emdawnwebgpu INTERFACE "--use-port=emdawnwebgpu"
+		# Creates the WebGPU device before the game starts (WebGPU device creation is asynchronous)
+		"SHELL:--post-js ${CMAKE_CURRENT_LIST_DIR}/../platforms/emscripten/webgpu-postjs.js")
+	add_library(dawn::webgpu_dawn ALIAS wz_emdawnwebgpu)
+	set(WZ_DAWN_FOUND TRUE)
+	message(STATUS "Dawn WebGPU: Emscripten emdawnwebgpu port (host tools: ${WZ_WEBGPU_HOST_TOOLS_DIR})")
+	return()
 endif()
 
 set(WZ_DAWN_GIT_TAG "224dae66485fc686892222e55dae5c83821f4d10" CACHE STRING "Dawn commit to fetch and build")

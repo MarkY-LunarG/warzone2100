@@ -295,6 +295,75 @@ See [platforms/windows/README-build.md](platforms/windows/README-build.md)
 ### macOS
 See [platforms/macos/README.md](platforms/macos/README.md)
 
+### WebGPU backend
+
+The WebGPU backend uses [Dawn](https://dawn.googlesource.com/dawn).
+It is available on Linux (Wayland only) and in the browser.
+It is off by default.
+Enable it with the CMake option `WZ_ENABLE_BACKEND_WEBGPU=ON`.
+
+The build translates the Vulkan shaders to WGSL.
+Thus, it needs `glslc` (from shaderc or the Vulkan SDK).
+
+#### Native (Linux)
+
+* Prerequisites, in addition to the [Linux](#linux) prerequisites:
+   * CMake 3.28 or later
+   * The Wayland development packages: wayland-client, wayland-cursor, wayland-egl, and xkbcommon
+* Configure and build:
+   ```shell
+   cmake -S . -B build -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWZ_ENABLE_BACKEND_WEBGPU=ON
+   cmake --build build
+   ```
+   The first build gets Dawn at a pinned commit and builds it, which takes several minutes.
+   To use a local Dawn checkout at that commit, add `-DFETCHCONTENT_SOURCE_DIR_DAWN=/path/to/dawn`.
+* Run:
+   ```shell
+   ./build/src/warzone2100 --gfxbackend=webgpu
+   ```
+   WebGPU needs the SDL Wayland video driver.
+   On X11, the game uses the next available backend.
+
+Debug aids:
+
+* `--gfxdebug` compiles all the WGSL shaders at startup and reports the errors.
+* `WZ_WEBGPU_DEBUG_SCREENSHOT=<frame>:<file.png>` saves that frame as a PNG.
+  The file name is relative to the configuration directory.
+* `WZ_WEBGPU_DEBUG_FORCE_DEVICE_LOSS=<frame>` loses the WebGPU device at that frame.
+
+#### Browser
+
+The browser build uses Emscripten's `emdawnwebgpu` port.
+The page creates the WebGPU device before the game starts.
+See [platforms/emscripten/webgpu-postjs.js](platforms/emscripten/webgpu-postjs.js).
+If the browser has no WebGPU, the game uses WebGL 2.
+
+* Prerequisites, in addition to [the Emscripten ones](platforms/emscripten/README-build.md):
+   * Emscripten 4.0.10, the version that the CI uses.
+     Emscripten 6 does not work: its `emdawnwebgpu` port reads a setting that Emscripten 6 removed.
+   * vcpkg, as in the Emscripten build instructions
+   * autoconf, autoconf-archive, automake, and libtool (vcpkg needs them to build libsodium)
+   * A native WebGPU build (see above).
+     Its host tools `tint` and `wz_webgpu_spirv_prep` translate the shaders for the browser build.
+     To build only the tools:
+     ```shell
+     cmake --build build --target tint wz_webgpu_spirv_prep
+     ```
+* Configure and build (with the Emscripten environment active):
+   ```shell
+   cmake -S . -B build_web -GNinja -DCMAKE_BUILD_TYPE=Release \
+       "-DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+       -DVCPKG_TARGET_TRIPLET=wasm32-emscripten \
+       -DWZ_ENABLE_BACKEND_WEBGPU=ON "-DWZ_WEBGPU_HOST_TOOLS_DIR=$(pwd)/build"
+   cmake --build build_web
+   ```
+* Run with `emrun`, which serves the page with the headers that threads need:
+   ```shell
+   emrun --browser firefox build_web/src/index.html
+   ```
+   Use a browser with WebGPU.
+   The browser version has no screenshots and no `--gfxdebug` shader check yet.
+
 # Licensing
 
 Warzone 2100 is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version.

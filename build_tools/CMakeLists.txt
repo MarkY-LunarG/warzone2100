@@ -40,7 +40,8 @@ set(wz2100_autorevision_h_file "${_autorevision_h_file}" PARENT_SCOPE)
 ############################
 # WebGPU shader preparation tool (host build tool for data/CMakeLists.txt)
 
-if(WZ_ENABLE_BACKEND_WEBGPU AND WZ_DAWN_FOUND)
+if(WZ_ENABLE_BACKEND_WEBGPU AND WZ_DAWN_FOUND AND NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+	# (An Emscripten build imports the tool from a native build: see cmake/WZDawn.cmake)
 	# Uses the SPIRV-Tools that Dawn builds, so that its version is pinned with Dawn
 	add_executable(wz_webgpu_spirv_prep "webgpu/wz_webgpu_spirv_prep.cpp")
 	target_link_libraries(wz_webgpu_spirv_prep PRIVATE SPIRV-Tools-opt)

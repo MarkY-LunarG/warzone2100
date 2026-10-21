@@ -27,6 +27,7 @@ else()
 	set(WZ_SKIP_ADDITIONAL_FONTS ON CACHE BOOL "Skip additional fonts (used to display CJK glyphs)" FORCE)
 	set(WZ_USE_STACK_PROTECTION OFF CACHE BOOL "Use Stack Protection hardening." FORCE)
 	OPTION(WZ_EMSCRIPTEN_COMPRESS_OUTPUT "Compress Emscripten output (generate .gz files)" ON)
+	OPTION(WZ_ENABLE_BACKEND_WEBGPU "Enable WebGPU backend (Emscripten emdawnwebgpu port)" OFF)
 endif()
 
 # Dev options
@@ -185,6 +186,10 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
 		set(COMP_AND_LINK_FLAGS "${COMP_AND_LINK_FLAGS} -fsanitize=address -fsanitize-recover=address")
 	endif()
 	set(USE_FLAGS "-pthread --use-port=freetype --use-port=harfbuzz")
+	if ("${EMSCRIPTEN_VERSION}" VERSION_GREATER_EQUAL 5.0.0)
+		# Emscripten 5 and later define only __EMSCRIPTEN__, but 3rdparty code (for example quickjs) tests EMSCRIPTEN
+		add_compile_definitions(EMSCRIPTEN=1)
+	endif()
 
 	# Set various flags and executable settings
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COMP_AND_LINK_FLAGS} ${USE_FLAGS}")

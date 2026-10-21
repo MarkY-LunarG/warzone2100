@@ -52,6 +52,9 @@
 #include "render_graph/scene_post_effects.h"
 
 #include <webgpu/webgpu_cpp.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -127,8 +130,14 @@ wgpu::TextureFormat to_wgpu(gfx_api::pixel_format format)
 		case gfx_api::pixel_format::FORMAT_RGB8_UNORM_PACK8: return wgpu::TextureFormat::Undefined; // WebGPU has no RGB8
 		case gfx_api::pixel_format::FORMAT_RG8_UNORM: return wgpu::TextureFormat::RG8Unorm;
 		case gfx_api::pixel_format::FORMAT_R8_UNORM: return wgpu::TextureFormat::R8Unorm;
+#if defined(__EMSCRIPTEN__)
+		// The emdawnwebgpu port of Emscripten 4.0.10 has no 16-bit unorm formats (an optional feature)
+		case gfx_api::pixel_format::FORMAT_R16_UNORM: return wgpu::TextureFormat::Undefined;
+		case gfx_api::pixel_format::FORMAT_RG16_UNORM: return wgpu::TextureFormat::Undefined;
+#else
 		case gfx_api::pixel_format::FORMAT_R16_UNORM: return wgpu::TextureFormat::R16Unorm;
 		case gfx_api::pixel_format::FORMAT_RG16_UNORM: return wgpu::TextureFormat::RG16Unorm;
+#endif
 		case gfx_api::pixel_format::FORMAT_D24_UNORM_S8: return wgpu::TextureFormat::Depth24PlusStencil8;
 		case gfx_api::pixel_format::FORMAT_RGB_BC1_UNORM: return wgpu::TextureFormat::BC1RGBAUnorm;
 		case gfx_api::pixel_format::FORMAT_RGBA_BC2_UNORM: return wgpu::TextureFormat::BC2RGBAUnorm;
@@ -665,9 +674,13 @@ private:
 	};
 
 	bool _initialize(const gfx_api::backend_Impl_Factory& impl, int32_t antialiasing, swap_interval_mode mode, optional<float> mipLodBias, uint32_t depthMapResolution) override;
+#if defined(__EMSCRIPTEN__)
+	bool initializeWebDevice();
+#else
 	bool requestAdapter();
 	bool requestDevice();
 	bool readSurfaceCapabilities();
+#endif
 	void createDefaultResources();
 	optional<wgpu::PresentMode> presentModeFor(swap_interval_mode mode) const;
 	void configureSurface();
@@ -817,11 +830,15 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 		return false;
 	}
 
+#if defined(__EMSCRIPTEN__)
+	instance = wgpu::CreateInstance(nullptr);
+#else
 	static const wgpu::InstanceFeatureName instanceFeatures[] = { wgpu::InstanceFeatureName::TimedWaitAny };
 	wgpu::InstanceDescriptor instanceDesc;
 	instanceDesc.requiredFeatureCount = 1;
 	instanceDesc.requiredFeatures = instanceFeatures;
 	instance = wgpu::CreateInstance(&instanceDesc);
+#endif
 	if (!instance)
 	{
 		debug(LOG_ERROR, "Failed to create the WebGPU instance");
@@ -837,6 +854,13 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 	}
 	surface = wgpu::Surface::Acquire(rawSurface);
 
+#if defined(__EMSCRIPTEN__)
+	// In the browser, the page creates the device before the game starts (webgpu-postjs.js)
+	if (!initializeWebDevice())
+	{
+		return false;
+	}
+#else
 	if (!requestAdapter())
 	{
 		return false;
@@ -853,6 +877,7 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 	{
 		return false;
 	}
+#endif
 
 	createDefaultResources();
 
@@ -892,6 +917,48 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 	return true;
 }
 
+#if defined(__EMSCRIPTEN__)
+bool wgpu_context::initializeWebDevice()
+{
+	WGPUDevice rawDevice = emscripten_webgpu_get_device();
+	if (rawDevice == nullptr)
+	{
+		debug(LOG_ERROR, "The page did not create a WebGPU device");
+		return false;
+	}
+	device = wgpu::Device::Acquire(rawDevice);
+	queue = device.GetQueue();
+	device.GetLimits(&deviceLimits);
+	for (wgpu::FeatureName feature : {
+		wgpu::FeatureName::TextureCompressionBC,
+		wgpu::FeatureName::TextureCompressionETC2,
+		wgpu::FeatureName::TextureCompressionASTC,
+		wgpu::FeatureName::Depth32FloatStencil8 })
+	{
+		if (device.HasFeature(feature))
+		{
+			enabledFeatures.insert(feature);
+		}
+	}
+
+	wgpu::AdapterInfo info;
+	device.GetAdapterInfo(&info);
+	backendGameInfo["webgpu_backend"] = "Browser";
+	backendGameInfo["webgpu_vendor"] = to_std_string(info.vendor);
+	backendGameInfo["webgpu_device"] = to_std_string(info.device);
+	backendGameInfo["webgpu_driver"] = to_std_string(info.description);
+	formattedRendererInfoString = "WebGPU (Browser): " + backendGameInfo["webgpu_vendor"] + " " + to_std_string(info.architecture);
+	debug(LOG_INFO, "WebGPU: browser device (%s)", formattedRendererInfoString.c_str());
+
+	// Without the adapter, the surface capabilities are not available, so the page gives the canvas format.
+	// The browser presents at the end of the animation frame, so FIFO is the only present mode.
+	const bool rgba = MAIN_THREAD_EM_ASM_INT({ return (Module['WZVAL_webgpuPreferredCanvasFormat'] === 'rgba8unorm') ? 1 : 0; }) != 0;
+	surfaceFormat = rgba ? wgpu::TextureFormat::RGBA8Unorm : wgpu::TextureFormat::BGRA8Unorm;
+	supportedPresentModes = { wgpu::PresentMode::Fifo };
+	surfaceUsage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc;
+	return true;
+}
+#else
 bool wgpu_context::requestAdapter()
 {
 	wgpu::RequestAdapterOptions options;
@@ -1030,6 +1097,7 @@ bool wgpu_context::requestDevice()
 	enabledFeatures.insert(requiredFeatures.begin(), requiredFeatures.end());
 	return true;
 }
+#endif // defined(__EMSCRIPTEN__)
 
 void wgpu_context::createDefaultResources()
 {
@@ -1224,6 +1292,15 @@ void wgpu_context::acquireSwapchainForFrameDraw()
 			debug(LOG_ERROR, "Failed to get the current WebGPU surface texture");
 			return;
 	}
+	if (surfaceTexture.texture.GetWidth() != surfaceWidth || surfaceTexture.texture.GetHeight() != surfaceHeight)
+	{
+		// In the browser, the page can change the canvas size after the configuration.
+		// The pipeline surfaces must have the size of the surface texture, so configure again.
+		debug(LOG_3D, "The WebGPU surface texture is %ux%u, not %ux%u", surfaceTexture.texture.GetWidth(),
+			  surfaceTexture.texture.GetHeight(), surfaceWidth, surfaceHeight);
+		surfaceNeedsConfigure = true;
+		return;
+	}
 	swapchainTexture = surfaceTexture.texture;
 	swapchainView = swapchainTexture.CreateView();
 	swapchainAcquired = true;
@@ -1297,10 +1374,12 @@ void wgpu_context::finishScreenFrame()
 		{
 			completeScreenshot();
 		}
+#if !defined(__EMSCRIPTEN__)
 		if (debugForceDeviceLossFrame.has_value() && debugForceDeviceLossFrame.value() == frameNum)
 		{
 			device.ForceLoss(wgpu::DeviceLostReason::Unknown, "WZ_WEBGPU_DEBUG_FORCE_DEVICE_LOSS");
 		}
+#endif
 #if !defined(__EMSCRIPTEN__)
 		// In the browser, the frame is presented at the end of the animation frame
 		if (swapchainAcquired)
@@ -1967,6 +2046,10 @@ wgpu::RenderPipeline wgpu_context::buildPipelineVariant(wgpu_pipeline_state_obje
 	desc.multisample.count = key.samples;
 	desc.fragment = &fragment;
 
+#if defined(__EMSCRIPTEN__)
+	// The browser cannot wait for the error scope; validation errors go to the page (webgpu-postjs.js)
+	return device.CreateRenderPipeline(&desc);
+#else
 	// Find the validation errors here, not at the first draw
 	device.PushErrorScope(wgpu::ErrorFilter::Validation);
 	wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
@@ -1980,6 +2063,7 @@ wgpu::RenderPipeline wgpu_context::buildPipelineVariant(wgpu_pipeline_state_obje
 			}
 		}), UINT64_MAX);
 	return failed ? wgpu::RenderPipeline() : pipeline;
+#endif
 }
 
 pipeline_variant_key wgpu_context::currentVariantKey(const wgpu_pipeline_state_object& pso) const
@@ -2787,7 +2871,11 @@ bool wgpu_context::textureFormatIsSupported(gfx_api::pixel_format_target target,
 			return enabledFeatures.count(wgpu::FeatureName::TextureCompressionASTC) > 0;
 		case gfx_api::pixel_format::FORMAT_R16_UNORM:
 		case gfx_api::pixel_format::FORMAT_RG16_UNORM:
+#if defined(__EMSCRIPTEN__)
+			return false; // see to_wgpu()
+#else
 			return enabledFeatures.count(wgpu::FeatureName::TextureFormatsTier1) > 0;
+#endif
 		case gfx_api::pixel_format::FORMAT_D32_SFLOAT_S8_UINT:
 			return enabledFeatures.count(wgpu::FeatureName::Depth32FloatStencil8) > 0;
 		default:
@@ -2820,6 +2908,9 @@ int32_t wgpu_context::get_context_value(const context_value property)
 
 bool wgpu_context::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)> callback)
 {
+#if defined(__EMSCRIPTEN__)
+	return false; // TODO: the readback waits for MapAsync, which the browser cannot do
+#else
 	if (!swapchainAcquired || renderPass || !(surfaceUsage & wgpu::TextureUsage::CopySrc) || screenshotCallback || !ensureEncoder())
 	{
 		return false; // like Vulkan, fail if the swapchain cannot be copied
@@ -2843,10 +2934,12 @@ bool wgpu_context::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)>
 	encoder.CopyTextureToBuffer(&source, &destination, &size);
 	screenshotCallback = std::move(callback);
 	return true;
+#endif
 }
 
 void wgpu_context::completeScreenshot()
 {
+#if !defined(__EMSCRIPTEN__)
 	auto callback = std::move(screenshotCallback);
 	screenshotCallback = nullptr;
 	bool mapped = false;
@@ -2884,6 +2977,7 @@ void wgpu_context::completeScreenshot()
 	screenshotBuffer.Unmap();
 	screenshotBuffer = nullptr;
 	callback(std::move(image));
+#endif
 }
 
 // MARK: wgpu_context - shader check
@@ -2892,6 +2986,9 @@ void wgpu_context::completeScreenshot()
 // the errors. This checks the translation, the packing into base.wz, and Dawn's validation.
 bool wgpu_context::compileAllShaderModules()
 {
+#if defined(__EMSCRIPTEN__)
+	return true; // the check waits for the compilation info, which the browser cannot do
+#else
 	std::set<std::string> paths;
 	for (int mode = static_cast<int>(SHADER_NONE) + 1; mode < static_cast<int>(SHADER_MAX); ++mode)
 	{
@@ -2934,6 +3031,7 @@ bool wgpu_context::compileAllShaderModules()
 
 	debug(LOG_INFO, "WebGPU shader check: %zu shader modules, %zu failed", paths.size(), failures);
 	return failures == 0;
+#endif
 }
 
 // MARK: wgpu_context - shutdown
