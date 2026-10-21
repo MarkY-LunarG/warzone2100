@@ -41,6 +41,7 @@
 
 #include "lib/framework/frame.h"
 #include "lib/framework/physfs_ext.h"
+#include "lib/framework/wzapp.h"
 #include "gfx_api_webgpu.h"
 #include "shader_catalog.h"
 #include "png_util.h"
@@ -54,6 +55,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdlib>
@@ -670,6 +672,7 @@ private:
 	optional<wgpu::PresentMode> presentModeFor(swap_interval_mode mode) const;
 	void configureSurface();
 	void presentClearedFrame();
+	[[noreturn]] void handleDeviceLost();
 	void completeScreenshot();
 	bool compileAllShaderModules();
 	void releaseWebGPUObjects();
@@ -717,7 +720,8 @@ private:
 	uint32_t surfaceHeight = 0;
 	bool surfaceConfigured = false;
 	bool surfaceNeedsConfigure = false;
-	bool deviceLost = false;
+	// Set by the device-lost callback, which Dawn can call on a different thread
+	std::atomic<bool> deviceLost{false};
 	swap_interval_mode swapMode = swap_interval_mode::vsync;
 
 	// Frame state
@@ -780,6 +784,8 @@ private:
 	// Debug aid: WZ_WEBGPU_DEBUG_SCREENSHOT=<frame>:<file.png> saves that frame as a PNG
 	optional<size_t> debugScreenshotFrame;
 	std::string debugScreenshotPath;
+	// Debug aid: WZ_WEBGPU_DEBUG_FORCE_DEVICE_LOSS=<frame> loses the device at that frame
+	optional<size_t> debugForceDeviceLossFrame;
 
 	gfx_api::lighting_constants shadowConstants;
 	std::map<std::string, std::string> backendGameInfo;
@@ -877,6 +883,11 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 			debug(LOG_INFO, "WebGPU debug screenshot: frame %zu -> %s", debugScreenshotFrame.value(), debugScreenshotPath.c_str());
 		}
 	}
+	if (const char* forceLoss = getenv("WZ_WEBGPU_DEBUG_FORCE_DEVICE_LOSS"))
+	{
+		debugForceDeviceLossFrame = static_cast<size_t>(strtoul(forceLoss, nullptr, 10));
+		debug(LOG_INFO, "WebGPU debug: the device will be lost at frame %zu", debugForceDeviceLossFrame.value());
+	}
 
 	return true;
 }
@@ -937,6 +948,12 @@ bool wgpu_context::readSurfaceCapabilities()
 	}
 
 	supportedPresentModes.assign(capabilities.presentModes, capabilities.presentModes + capabilities.presentModeCount);
+	std::string presentModes;
+	for (wgpu::PresentMode presentMode : supportedPresentModes)
+	{
+		presentModes += (presentModes.empty() ? "" : ", ") + std::to_string(static_cast<int>(presentMode));
+	}
+	debug(LOG_3D, "WebGPU surface present modes: %s", presentModes.c_str());
 
 	surfaceUsage = wgpu::TextureUsage::RenderAttachment;
 	if (capabilities.usages & wgpu::TextureUsage::CopySrc)
@@ -1162,6 +1179,10 @@ void wgpu_context::reconcileSwapchainAtFrameOpen()
 
 void wgpu_context::beginScreenFrame()
 {
+	if (deviceLost)
+	{
+		handleDeviceLost();
+	}
 	for (auto& chunk : uniformChunks)
 	{
 		chunk->used = 0;
@@ -1236,6 +1257,19 @@ void wgpu_context::presentClearedFrame()
 	encoder.BeginRenderPass(&passDesc).End();
 }
 
+void wgpu_context::handleDeviceLost()
+{
+	// The same path as the Vulkan backend (handleUnrecoverableError): offer a different graphics
+	// backend for the next start, or show the error, and then stop. A lost device cannot be used again.
+	debug(LOG_ERROR, "The WebGPU device was lost");
+	const std::string details = "Failed with error: the WebGPU device was lost";
+	if (!wzPromptToChangeGfxBackendOnFailure(details))
+	{
+		wzDisplayFatalGfxBackendFailure(details);
+	}
+	abort();
+}
+
 void wgpu_context::finishScreenFrame()
 {
 	ASSERT(!renderPass, "finishScreenFrame called while a render pass is active");
@@ -1262,6 +1296,10 @@ void wgpu_context::finishScreenFrame()
 		if (screenshotCallback)
 		{
 			completeScreenshot();
+		}
+		if (debugForceDeviceLossFrame.has_value() && debugForceDeviceLossFrame.value() == frameNum)
+		{
+			device.ForceLoss(wgpu::DeviceLostReason::Unknown, "WZ_WEBGPU_DEBUG_FORCE_DEVICE_LOSS");
 		}
 #if !defined(__EMSCRIPTEN__)
 		// In the browser, the frame is presented at the end of the animation frame
@@ -2966,6 +3004,7 @@ void wgpu_context::releaseWebGPUObjects()
 
 void wgpu_context::shutdown()
 {
+	debug(LOG_3D, "WebGPU backend shutdown after %zu frames", frameNum);
 	releaseWebGPUObjects();
 	backend_impl.reset();
 }
