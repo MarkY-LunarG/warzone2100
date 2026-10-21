@@ -31,4 +31,9 @@ void main()
 	gl_Position.y *= -1.;
 	// GL-style clip Z is [-w, w]; Vulkan NDC Z is [0, 1].
 	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

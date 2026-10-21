@@ -25,7 +25,8 @@ layout(set = 2, binding = 8) uniform sampler2DArray decalHeight;
 layout(set = 2, binding = 9) uniform sampler2DArrayShadow shadowMap;
 
 layout(location = 0) in FragData frag;
-layout(location = 10) flat in FragFlatData fragf;
+layout(location = 10) flat in int fragf_tileNo;
+layout(location = 11) flat in uvec4 fragf_grounds;
 layout(location = 12) in mat3 ModelTangentMatrix;
 
 layout(location = 0) out vec4 FragColor;
@@ -35,7 +36,7 @@ layout(location = 0) out vec4 FragColor;
 #include "pointlights.glsl"
 
 vec3 getGroundUv(int i) {
-	uint groundNo = fragf.grounds[i];
+	uint groundNo = fragf_grounds[i];
 	return vec3(frag.uvGround * groundScale[groundNo/4u][groundNo%4u], groundNo);
 }
 
@@ -116,8 +117,8 @@ vec4 main_bumpMapping() {
 	getGroundBM(2, bump);
 	getGroundBM(3, bump);
 
-	if (fragf.tileNo >= 0) {
-		vec3 uv = vec3(frag.uvDecal, fragf.tileNo);
+	if (fragf_tileNo >= 0) {
+		vec3 uv = vec3(frag.uvDecal, fragf_tileNo);
 		vec4 decalColor = texture(decalTex, uv, WZ_MIP_LOAD_BIAS);
 		float a = decalColor.a;
 		// blend color, normal and gloss with ground ones based on alpha

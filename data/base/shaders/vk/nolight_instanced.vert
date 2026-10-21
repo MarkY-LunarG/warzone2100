@@ -43,4 +43,9 @@ void main()
 	colour = instanceColour;
 	texCoord_vertexDistance = vec4(texCoord.x, texCoord.y, 0.f, 0.f);
 	packed_ecmState_alphaTest = vec4(0.f, alphaTest, 0.f, 0.f);
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

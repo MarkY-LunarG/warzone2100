@@ -21,4 +21,9 @@ void main()
 	vec2 uv1 = vec2(vertex.x/3.f/128.f, -vertex.z/3.f/128.f + timeSec/45.f);
 	vec2 uv2 = vec2(vertex.x/4.f/128.f, -vertex.z/4.f/128.f - timeSec/60.f);
 	uv1_uv2 = vec4(uv1.x, uv1.y, uv2.x, uv2.y);
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

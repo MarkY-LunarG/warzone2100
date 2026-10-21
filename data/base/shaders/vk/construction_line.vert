@@ -17,4 +17,9 @@ void main()
 	gl_Position.y *= -1.0;
 	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
 	posViewSpace = (ModelViewMatrix * vertex).xyz;
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

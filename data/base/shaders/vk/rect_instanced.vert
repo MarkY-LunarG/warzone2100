@@ -26,4 +26,9 @@ void main()
 
 	// pack outputs for fragment shader
 	colour = instanceColour;
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

@@ -267,6 +267,64 @@ else()
 	message(STATUS "Unable to find glslc - Vulkan shaders will not be compiled")
 endif()
 
+###########################
+# WebGPU (WGSL) shaders, translated from the Vulkan GLSL
+
+# For each Vulkan vertex and fragment shader:
+#   1. glslc -DWZ_WEBGPU=1: compile the GLSL to SPIR-V
+#   2. wz_webgpu_spirv_prep: split the combined image samplers, and set fixed binding numbers
+#   3. tint: translate the SPIR-V to WGSL
+# WebGPU has no tessellation, so the .tesc and .tese files are not translated.
+# A hand-written base/shaders/wgsl/<name>.wgsl replaces the translation of that stage.
+if(WZ_ENABLE_BACKEND_WEBGPU AND WZ_DAWN_FOUND)
+	if(NOT GLSLC)
+		message(FATAL_ERROR "WZ_ENABLE_BACKEND_WEBGPU requires glslc (install shaderc or the Vulkan SDK, or set GLSLC)")
+	endif()
+	set(_wgsl_output_dir "${CMAKE_CURRENT_BINARY_DIR}/base/shaders/wgsl")
+	set(_wgsl_handwritten_dir "${CMAKE_CURRENT_SOURCE_DIR}/base/shaders/wgsl")
+	# Intermediate SPIR-V files go outside base/shaders, so that they are not packed into base.wz
+	set(_wgsl_spirv_dir "${CMAKE_CURRENT_BINARY_DIR}/webgpu_spirv")
+	file(MAKE_DIRECTORY "${_wgsl_output_dir}" "${_wgsl_spirv_dir}")
+	set(WGSL_SHADER_LIST "")
+	set(_wgsl_handwritten_count 0)
+	foreach(SHADER ${VK_SHADERS})
+		get_filename_component(SHADER_FILE ${SHADER} NAME)
+		get_filename_component(SHADER_EXT ${SHADER} LAST_EXT)
+		if(SHADER_EXT STREQUAL ".tesc" OR SHADER_EXT STREQUAL ".tese")
+			continue()
+		endif()
+		set(_handwritten "${_wgsl_handwritten_dir}/${SHADER_FILE}.wgsl")
+		if(EXISTS "${_handwritten}")
+			# base.wz gets the hand-written file from the source tree. Warn if the GLSL is newer,
+			# because the hand-written file must follow changes to the GLSL.
+			math(EXPR _wgsl_handwritten_count "${_wgsl_handwritten_count} + 1")
+			if("${SHADER}" IS_NEWER_THAN "${_handwritten}")
+				message(WARNING "${SHADER} is newer than its hand-written WGSL ${_handwritten}; update the WGSL")
+			endif()
+			continue()
+		endif()
+		set(_spirv "${_wgsl_spirv_dir}/${SHADER_FILE}.spv")
+		set(_spirv_prepared "${_wgsl_spirv_dir}/${SHADER_FILE}.prep.spv")
+		set(_wgsl "${_wgsl_output_dir}/${SHADER_FILE}.wgsl")
+		add_custom_command(OUTPUT "${_wgsl}"
+			COMMAND "${GLSLC}" "-c" "-DWZ_WEBGPU=1" "-I" "${_vk_generated_dir}" "${SHADER}" "-o" "${_spirv}"
+			COMMAND wz_webgpu_spirv_prep "${_spirv}" "${_spirv_prepared}"
+			# GLSL permits texture sampling and derivatives in non-uniform control flow; WGSL does not by default.
+			# The unreachable-code warnings are for valid GLSL (for example, code after discard).
+			COMMAND tint "--allow-non-uniform-derivatives" "true" "--disable-unreachable-code-warning" "true" "--format" "wgsl" "${_spirv_prepared}" "-o" "${_wgsl}"
+			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/base/shaders/vk"
+			DEPENDS "${SHADER}" "${_vk_generated_constants}" ${VK_SHADER_INCLUDES} wz_webgpu_spirv_prep tint
+			COMMENT "Translating ${SHADER_FILE} to WGSL"
+			VERBATIM
+		)
+		list(APPEND WGSL_SHADER_LIST "${_wgsl}")
+	endforeach()
+	list(LENGTH WGSL_SHADER_LIST _wgsl_translated_count)
+	message(STATUS "WebGPU shaders: ${_wgsl_translated_count} translated, ${_wgsl_handwritten_count} hand-written")
+	add_custom_target(wgsl_compilation DEPENDS ${WGSL_SHADER_LIST})
+	set_property(TARGET wgsl_compilation PROPERTY FOLDER "data")
+endif()
+
 set(_glsl_generatedfiles_PATHS)
 if(TARGET glsl_compilation)
 	set(_glsl_generatedfiles_PATHS
@@ -702,6 +760,10 @@ if(TARGET data_terrain_overrides_high)
 endif()
 if(TARGET glsl_compilation)
 	add_dependencies(data_base glsl_compilation)
+endif()
+if(TARGET wgsl_compilation)
+	# The WGSL files are in the build "shaders" folder, which base.wz gets with the SPIR-V files
+	add_dependencies(data_base wgsl_compilation)
 endif()
 if(TARGET texture_encoding)
 	add_dependencies(data_base texture_encoding)

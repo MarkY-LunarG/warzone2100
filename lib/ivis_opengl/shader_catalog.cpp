@@ -145,6 +145,12 @@ std::string vk_spv_path(const char* basename)
 	return std::string("shaders/vk/") + basename + ".spv";
 }
 
+std::string wgsl_path(const char* basename)
+{
+	ASSERT_OR_RETURN({}, basename != nullptr && basename[0] != '\0', "Empty shader basename");
+	return std::string("shaders/wgsl/") + basename + ".wgsl";
+}
+
 const shader_stage_file* find_stage(const shader_program_desc& desc, shader_stage_kind kind)
 {
 	for (uint8_t i = 0; i < desc.stage_count && i < MAX_SHADER_STAGES; ++i)
@@ -161,6 +167,11 @@ bool shader_has_tessellation(const shader_program_desc& desc)
 {
 	return find_stage(desc, shader_stage_kind::tess_control) != nullptr
 		|| find_stage(desc, shader_stage_kind::tess_eval) != nullptr;
+}
+
+bool shader_supported_by_webgpu(const shader_program_desc& desc)
+{
+	return !shader_has_tessellation(desc);
 }
 
 } // namespace gfx_api

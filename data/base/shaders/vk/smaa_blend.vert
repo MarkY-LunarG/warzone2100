@@ -47,4 +47,9 @@ void main()
 	gl_Position = vec4(vertexPos.x, vertexPos.y, 0.0, 1.0);
 	uv = (0.5 * gl_Position.xy + vec2(0.5)) * uvScaleClamp.xy;
 	offset0 = uv.xyxy + rtMetrics.xyxy * vec4(1.0, 0.0, 0.0, 1.0);
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

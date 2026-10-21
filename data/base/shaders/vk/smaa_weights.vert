@@ -61,4 +61,9 @@ void main()
 
 	// the far ends of the orthogonal search loops
 	offset2 = vec4(offset0.xz, offset1.yw) + vec4(-2.0, 2.0, -2.0, 2.0) * rtMetrics.xxyy * params.x;
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

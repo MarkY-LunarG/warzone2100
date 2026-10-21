@@ -36,3 +36,13 @@ set(wz2100_autorevision_h_file "${_autorevision_h_file}" PARENT_SCOPE)
 # Example:
 #	set_source_files_properties("${wz2100_autorevision_cache_file}" PROPERTIES GENERATED TRUE)
 # 	set_source_files_properties("${wz2100_autorevision_h_file}" PROPERTIES GENERATED TRUE)
+
+############################
+# WebGPU shader preparation tool (host build tool for data/CMakeLists.txt)
+
+if(WZ_ENABLE_BACKEND_WEBGPU AND WZ_DAWN_FOUND)
+	# Uses the SPIRV-Tools that Dawn builds, so that its version is pinned with Dawn
+	add_executable(wz_webgpu_spirv_prep "webgpu/wz_webgpu_spirv_prep.cpp")
+	target_link_libraries(wz_webgpu_spirv_prep PRIVATE SPIRV-Tools-opt)
+	set_property(TARGET wz_webgpu_spirv_prep PROPERTY FOLDER "_WZBuildProcessTargets")
+endif()

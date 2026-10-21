@@ -11,18 +11,19 @@ layout(location = 6) in uvec4 grounds;		// ground types for splatting
 layout(location = 7) in vec4 groundWeights;	// ground weights for splatting
 
 layout(location = 0) out FragData frag;
-layout(location = 10) out flat FragFlatData fragf;
+layout(location = 10) flat out int fragf_tileNo;
+layout(location = 11) flat out uvec4 fragf_grounds;
 layout(location = 12) out mat3 ModelTangentMatrix;
 
 void main()
 {
-	fragf.tileNo = tileNo;
+	fragf_tileNo = tileNo;
 
 	frag.uvLightmap = (ModelUVLightmapMatrix * vertex).xy;
 	frag.uvGround = vec2(-vertex.z, vertex.x);
 	frag.uvDecal = vertexTexCoord;
 
-	fragf.grounds = grounds;
+	fragf_grounds = grounds;
 	if (groundWeights == vec4(0)) {
 		frag.groundWeights = vec4(0.25);
 	} else {
@@ -56,4 +57,9 @@ void main()
 	gl_Position = position;
 	gl_Position.y *= -1.;
 	gl_Position.z = (gl_Position.z + gl_Position.w) / 2.0;
+#ifdef WZ_WEBGPU
+	// For the same gl_Position, a WebGPU framebuffer is upside down compared to Vulkan.
+	// Negate Y, so that WebGPU renders the same image as Vulkan.
+	gl_Position.y = -gl_Position.y;
+#endif
 }

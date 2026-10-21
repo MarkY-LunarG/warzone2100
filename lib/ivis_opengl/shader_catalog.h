@@ -28,6 +28,7 @@
  * 2. Add a catalog row in shader_catalog.cpp.
  * 3. Add GL sources under data/base/shaders/ and VK sources under data/base/shaders/vk/.
  * 4. List the new VK stage files in data/CMakeLists.txt VK_SHADERS (glob check will FATAL otherwise).
+ *    The WebGPU build translates the VK vertex and fragment files to WGSL from this list.
  * 5. Add UBO struct + pipeline_state_helper alias (gfx_pipelines.h).
  * 6. Draw with the PSO.
  * Do not add rows to gfx_api_gl.cpp / gfx_api_vk.cpp.
@@ -121,8 +122,12 @@ const shader_program_desc& shader_catalog(SHADER_MODE mode);
 std::string gl_shader_path(const char* basename);
 // "shaders/vk/" + basename + ".spv"
 std::string vk_spv_path(const char* basename);
+// "shaders/wgsl/" + basename + ".wgsl" (translated from the VK source, or hand-written)
+std::string wgsl_path(const char* basename);
 
 const shader_stage_file* find_stage(const shader_program_desc& desc, shader_stage_kind kind);
 bool shader_has_tessellation(const shader_program_desc& desc);
+// WebGPU has no tessellation stages, so it supports only the programs without them
+bool shader_supported_by_webgpu(const shader_program_desc& desc);
 
 } // namespace gfx_api

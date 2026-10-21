@@ -59,8 +59,6 @@ struct FragData {
 	vec3 posViewSpace;
 };
 
-// non-interpolated data
-struct FragFlatData {
-	int tileNo;
-	uvec4 grounds;
-};
+// Non-interpolated data (fragf_tileNo, fragf_grounds) uses separate flat varyings at
+// locations 10 and 11, not a struct: Tint cannot translate a flat struct varying
+// with integer members to WGSL.
