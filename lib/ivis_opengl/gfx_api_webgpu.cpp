@@ -606,6 +606,8 @@ public:
 	gfx_api::PipelineSurfaceUsage pipelineSurfaceUsage(gfx_api::PipelineSurfaceId id) const override { return pipelineSurfaces.usage(id); }
 	const gfx_api::ResolvedSurfaceSpec& resolvedPipelineSurface(gfx_api::PipelineSurfaceId id) const override { return pipelineSurfaces.spec(id); }
 	gfx_api::pixel_format getDepthStencilFormat() const override { return gfx_api::pixel_format::FORMAT_D24_UNORM_S8; }
+	bool isSceneMSAAEnabled() const override { return sceneMsaaSamples > 1; }
+	bool isMultisampledColorAttachment(gfx_api::abstract_texture* texture) const override;
 	gfx_api::PipelineSurfaceSyncInputs pipelineSurfaceSyncInputs() const override;
 	gfx_api::SurfaceCapabilityHints surfaceCapabilities() const override;
 	bool ensurePipelineSurfaces(const gfx_api::ResolvedSurfaceTable& specs) override;
@@ -767,6 +769,7 @@ private:
 	std::array<std::unique_ptr<wgpu_surface_texture>, gfx_api::PIPELINE_SURFACE_COUNT> surfaceTextures;
 	size_t depthPassCount = 0;
 	uint32_t depthMapSize = 0;
+	uint32_t sceneMsaaSamples = 1; // WebGPU supports 1 and 4 samples
 
 	// Screenshot readback (getScreenshot records the copy; finishScreenFrame reads it after the submit)
 	std::function<void (std::unique_ptr<iV_Image>)> screenshotCallback;
@@ -854,6 +857,9 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 	}
 	swapMode = mode;
 	depthMapSize = (depthMapResolution > 0) ? depthMapResolution : 2048;
+	// As in Vulkan, MSAA applies to the scene only. WebGPU supports only 1 and 4 samples.
+	sceneMsaaSamples = (antialiasing >= 2) ? 4 : 1;
+	debug(LOG_3D, "Using scene sample count: %u (antialiasing setting: %d)", sceneMsaaSamples, static_cast<int>(antialiasing));
 	configureSurface();
 
 	if (useDebug && !compileAllShaderModules())
@@ -1593,9 +1599,12 @@ bool wgpu_context::setupPipelineLayout(wgpu_pipeline_state_object& pso)
 		{
 			slot.sampleType = wgpu::TextureSampleType::Depth;
 		}
-		else if (input.target == gfx_api::pixel_format_target::depth_map)
+		else if (input.target == gfx_api::pixel_format_target::depth_map
+			|| input.sampler == gfx_api::sampler_type::nearest_clamped || input.sampler == gfx_api::sampler_type::nearest_border)
 		{
-			// A depth texture read as float values cannot be filtered
+			// A depth texture read as float values cannot be filtered. The scene effects read the
+			// depth surfaces through nearest samplers as texture_2d<f32>, so a texture with a nearest
+			// sampler is unfilterable: that binding accepts depth and color textures.
 			slot.sampleType = wgpu::TextureSampleType::UnfilterableFloat;
 		}
 		else
@@ -2474,7 +2483,7 @@ gfx_api::PipelineSurfaceSyncInputs wgpu_context::pipelineSurfaceSyncInputs() con
 	}
 	inputs.shadowMapSize = depthMapSize;
 	inputs.numShadowCascades = static_cast<uint32_t>(std::min<size_t>(depthPassCount, WZ_MAX_SHADOW_CASCADES));
-	inputs.sceneMsaaSamples = 1; // TODO: MSAA (WebGPU supports 1 and 4 samples)
+	inputs.sceneMsaaSamples = sceneMsaaSamples;
 	inputs.swapchainMsaaSamples = 1;
 	inputs.presentColorFormat = (surfaceFormat == wgpu::TextureFormat::BGRA8Unorm) ? gfx_api::pixel_format::FORMAT_BGRA8_UNORM_PACK8 : gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8;
 	inputs.fsr1SceneUpscale = (getSceneUpscalingMode() == gfx_api::context::scene_upscaling_mode::fsr1);
@@ -2576,6 +2585,12 @@ void wgpu_context::PipelineSurfaceAllocator::onChanged()
 {
 	root.textureBindGroups.clear();
 	root.bumpRenderGraphEpoch();
+}
+
+bool wgpu_context::isMultisampledColorAttachment(gfx_api::abstract_texture* texture) const
+{
+	const wgpu_image* image = imageOf(texture);
+	return image != nullptr && image->samples > 1 && !isDepthFormat(image->format);
 }
 
 optional<std::pair<uint32_t, uint32_t>> wgpu_context::getRenderTargetDimensions(gfx_api::abstract_texture* texture)

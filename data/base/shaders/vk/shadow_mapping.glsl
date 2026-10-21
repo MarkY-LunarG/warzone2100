@@ -1,9 +1,23 @@
 // common shadow map functions shared by terrainDecails.frag / tcmask_instanced.frag shaders
 
+// coord: (uv, cascade layer, depth to compare)
+float wzShadowTexture(vec4 coord)
+{
+	float visibility = texture( shadowMap, coord );
+#ifdef WZ_WEBGPU
+	// WebGPU samplers have no border color, so the sampler clamps to the edge. The Vulkan sampler
+	// has an opaque white border: outside the map, the stored depth is 1.0. Get the same result.
+	// (Select after the lookup, so that the lookup stays in uniform control flow.)
+	bool outside = any(lessThan(coord.xy, vec2(0.0))) || any(greaterThan(coord.xy, vec2(1.0)));
+	visibility = outside ? ((coord.w <= 1.0) ? 1.0 : 0.0) : visibility;
+#endif
+	return visibility;
+}
+
 float getShadowMapDepthComp(vec2 base_uv, float u, float v, vec2 shadowMapSizeInv, int cascadeIndex, float z)
 {
 	vec2 uv = base_uv + vec2(u, v) * shadowMapSizeInv;
-	return texture( shadowMap, vec4(uv, cascadeIndex, z) );
+	return wzShadowTexture( vec4(uv, cascadeIndex, z) );
 }
 
 float getShadowVisibility(vec3 fragPosModelSpace, vec3 fragPosViewSpace, float NdotL, float offset)
@@ -200,7 +214,7 @@ float getShadowVisibility(vec3 fragPosModelSpace, vec3 fragPosViewSpace, float N
 		{
 			// PCF
 
-			visibility = texture( shadowMap, vec4(pos.xy, cascadeIndex, (pos.z+bias)) );
+			visibility = wzShadowTexture( vec4(pos.xy, cascadeIndex, (pos.z+bias)) );
 
 			if (WZ_SHADOW_FILTER_SIZE >= 2)
 			{
@@ -213,7 +227,7 @@ float getShadowVisibility(vec3 fragPosModelSpace, vec3 fragPosViewSpace, float N
 				{
 					for (float x=startVal; x<endVal; x+=1.0)
 					{
-						visibility -= visibilityIncrement*(1.0-texture( shadowMap, vec4(pos.xy + vec2(x*texelIncrement, y*texelIncrement), cascadeIndex, (pos.z+bias)) ));
+						visibility -= visibilityIncrement*(1.0-wzShadowTexture( vec4(pos.xy + vec2(x*texelIncrement, y*texelIncrement), cascadeIndex, (pos.z+bias)) ));
 					}
 				}
 			} // (WZ_SHADOW_FILTER_SIZE >= 2)
