@@ -62,6 +62,9 @@ namespace gfx_api
 #if defined(WZ_VULKAN_ENABLED)
 	class backend_Vulkan_Impl; // see: gfx_api_vk.h
 #endif
+#if defined(WZ_WEBGPU_ENABLED)
+	class backend_WebGPU_Impl; // see: gfx_api_webgpu.h
+#endif
 	class backend_Impl_Factory
 	{
 	public:
@@ -70,6 +73,9 @@ namespace gfx_api
 		virtual std::unique_ptr<backend_OpenGL_Impl> createOpenGLBackendImpl() const = 0;
 #if defined(WZ_VULKAN_ENABLED)
 		virtual std::unique_ptr<backend_Vulkan_Impl> createVulkanBackendImpl() const = 0;
+#endif
+#if defined(WZ_WEBGPU_ENABLED)
+		virtual std::unique_ptr<backend_WebGPU_Impl> createWebGPUBackendImpl() const = 0;
 #endif
 	};
 	//
@@ -81,7 +87,8 @@ namespace gfx_api
 	{
 		null_backend,
 		opengl_backend,
-		vulkan_backend
+		vulkan_backend,
+		webgpu_backend
 	};
 }
 

@@ -21,6 +21,7 @@ OPTION(ENABLE_NLS "Native Language Support" ON)
 if(NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
 	OPTION(ENABLE_DOCS "Enable documentation generation" ON)
 	OPTION(WZ_ENABLE_BACKEND_VULKAN "Enable Vulkan backend" ON)
+	OPTION(WZ_ENABLE_BACKEND_WEBGPU "Enable WebGPU backend (Dawn)" OFF)
 	set(WZ_USE_STACK_PROTECTION ON CACHE BOOL "Use Stack Protection hardening." FORCE)
 else()
 	set(WZ_SKIP_ADDITIONAL_FONTS ON CACHE BOOL "Skip additional fonts (used to display CJK glyphs)" FORCE)
@@ -899,8 +900,8 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/config.h.in" "${CMAKE_CURRENT_BI
 
 # Determine distribution license
 set(WZ_DIST_LICENSE "${CMAKE_CURRENT_BINARY_DIR}/dist/COPYING")
-if(WZ_ENABLE_BACKEND_VULKAN OR WZ_ENABLE_BASIS_UNIVERSAL)
-	# If Vulkan or Basis Universal is enabled, use the GPL3 license for distribution
+if(WZ_ENABLE_BACKEND_VULKAN OR WZ_ENABLE_BASIS_UNIVERSAL OR WZ_ENABLE_BACKEND_WEBGPU)
+	# If Vulkan, Basis Universal, or WebGPU (Dawn) is enabled, use the GPL3 license for distribution
 	configure_file("${CMAKE_CURRENT_SOURCE_DIR}/pkg/licenses/COPYING.gpl3" "${WZ_DIST_LICENSE}" COPYONLY)
 else()
 	# GPLv2
@@ -908,6 +909,10 @@ else()
 endif()
 
 set(wz2100_ROOT_FILES ChangeLog AUTHORS COPYING.NONGPL "${WZ_DIST_LICENSE}" COPYING.README README.md)
+
+if(WZ_ENABLE_BACKEND_WEBGPU)
+	include(WZDawn) # Must come before add_subdirectory(lib)
+endif()
 
 CONFIGURE_WZ_COMPILER_WARNINGS()
 add_subdirectory(build_tools)

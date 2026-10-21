@@ -236,6 +236,14 @@ if(WZ_ENABLE_BACKEND_VULKAN)
 	endif()
 endif()
 
+if(WZ_ENABLE_BACKEND_WEBGPU AND WZ_DAWN_FOUND)
+	target_sources(ivis-opengl PRIVATE "gfx_api_webgpu.cpp" "gfx_api_webgpu.h")
+	target_compile_definitions(ivis-opengl PUBLIC "-DWZ_WEBGPU_ENABLED")
+	# PUBLIC, so that the backend (ex. SDL) gets the Dawn headers
+	target_link_libraries(ivis-opengl PUBLIC dawn::webgpu_dawn)
+	# gfx_api_webgpu.cpp is not in the C++17 file list below: webgpu_cpp.h needs C++20
+endif()
+
 # Unfortunately, some distribution packages seem to have broken CMake Config files for libjpeg-turbo, which simply don't work
 # Default to using the vendored version, but provide an option for those building who wish to use the system library version
 set(_DEFAULT_WZ_USE_SYSTEM_LIBJPEG_TURBO_VALUE OFF)

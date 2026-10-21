@@ -1,0 +1,48 @@
+/*
+	This file is part of Warzone 2100.
+	Copyright (C) 2026  Warzone 2100 Project
+
+	Warzone 2100 is free software; you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation; either version 2 of the License, or
+	(at your option) any later version.
+
+	Warzone 2100 is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+	GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License
+	along with Warzone 2100; if not, write to the Free Software
+	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
+*/
+
+#pragma once
+
+#ifndef __INCLUDED_GFX_API_WEBGPU_SDL_H__
+#define __INCLUDED_GFX_API_WEBGPU_SDL_H__
+
+#include "lib/ivis_opengl/gfx_api_webgpu.h"
+#include <SDL3/SDL_video.h>
+
+#if defined(WZ_WEBGPU_ENABLED)
+
+class sdl_WebGPU_Impl final : public gfx_api::backend_WebGPU_Impl
+{
+public:
+	sdl_WebGPU_Impl(SDL_Window* window);
+
+	virtual WGPUSurface createSurface(WGPUInstance instance, std::string& errorMessage) override;
+	virtual void getDrawableSize(int* w, int* h) override;
+
+private:
+	SDL_Window* window;
+};
+
+// True if the WebGPU backend can work with the current (or the expected) SDL video driver.
+// On Linux, WebGPU uses Wayland only.
+bool sdl_WebGPU_VideoDriverIsSupported();
+
+#endif // defined(WZ_WEBGPU_ENABLED)
+
+#endif // __INCLUDED_GFX_API_WEBGPU_SDL_H__

@@ -360,6 +360,7 @@ std::string video_backend_names[] =
 	"opengl",
 	"opengles",
 	"vulkan",
+	"webgpu",
 #if defined(WZ_BACKEND_DIRECTX)
 	"directx",
 #endif
@@ -396,6 +397,8 @@ std::string to_display_string(const video_backend& backend)
 			return "OpenGL ES";
 		case video_backend::vulkan:
 			return "Vulkan";
+		case video_backend::webgpu:
+			return "WebGPU";
 #if defined(WZ_BACKEND_DIRECTX)
 		case video_backend::directx:
 			return "DirectX (ANGLE)";

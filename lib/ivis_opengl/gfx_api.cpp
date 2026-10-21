@@ -22,6 +22,7 @@
 #include "gfx_api_vk.h"
 #include "gfx_api_gl.h"
 #include "gfx_api_null.h"
+#include "gfx_api_webgpu.h"
 #include "render_graph/pass_resolve.h"
 #include "render_graph/compile.h"
 #include "gfx_api_image_compress_priv.h"
@@ -43,6 +44,7 @@ static const char* to_string(gfx_api::backend_type backendType)
 		case gfx_api::backend_type::null_backend: return "Null backend";
 		case gfx_api::backend_type::opengl_backend: return "GL backend";
 		case gfx_api::backend_type::vulkan_backend: return "Vulkan backend";
+		case gfx_api::backend_type::webgpu_backend: return "WebGPU backend";
 	}
 	return "";
 }
@@ -99,6 +101,14 @@ bool gfx_api::context::initialize(const gfx_api::backend_Impl_Factory& impl, int
 			current_backend_context = new VkRoot(uses_gfx_debug);
 #else
 			debug(LOG_FATAL, "Warzone 2100 was not compiled with support for the Vulkan backend.");
+			return false;
+#endif
+			break;
+		case gfx_api::backend_type::webgpu_backend:
+#if defined(WZ_WEBGPU_ENABLED)
+			current_backend_context = gfx_api::createWebGPUContext(uses_gfx_debug);
+#else
+			debug(LOG_FATAL, "Warzone 2100 was not compiled with support for the WebGPU backend.");
 			return false;
 #endif
 			break;

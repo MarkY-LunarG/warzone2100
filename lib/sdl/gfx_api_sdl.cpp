@@ -21,6 +21,7 @@
 #include "gfx_api_null_sdl.h"
 #include "gfx_api_gl_sdl.h"
 #include "gfx_api_vk_sdl.h"
+#include "gfx_api_webgpu_sdl.h"
 #include <SDL3/SDL_version.h>
 #include <SDL3/SDL_messagebox.h>
 
@@ -62,5 +63,13 @@ std::unique_ptr<gfx_api::backend_Vulkan_Impl> SDL_gfx_api_Impl_Factory::createVu
 
 	return std::unique_ptr<gfx_api::backend_Vulkan_Impl>();
 #endif
+}
+#endif
+
+#if defined(WZ_WEBGPU_ENABLED)
+std::unique_ptr<gfx_api::backend_WebGPU_Impl> SDL_gfx_api_Impl_Factory::createWebGPUBackendImpl() const
+{
+	ASSERT_OR_RETURN(nullptr, window != nullptr, "Invalid SDL_Window*");
+	return std::make_unique<sdl_WebGPU_Impl>(window);
 }
 #endif

@@ -44,6 +44,9 @@ public:
 #if defined(WZ_VULKAN_ENABLED)
 	virtual std::unique_ptr<gfx_api::backend_Vulkan_Impl> createVulkanBackendImpl() const override;
 #endif
+#if defined(WZ_WEBGPU_ENABLED)
+	virtual std::unique_ptr<gfx_api::backend_WebGPU_Impl> createWebGPUBackendImpl() const override;
+#endif
 
 private:
 	SDL_Window* window;

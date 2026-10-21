@@ -40,6 +40,7 @@
 #include "src/game.h"
 #include "gfx_api_sdl.h"
 #include "gfx_api_gl_sdl.h"
+#include "gfx_api_webgpu_sdl.h"
 #include "sdl_backend_private.h"
 
 #if defined( _MSC_VER )
@@ -522,6 +523,13 @@ std::vector<video_backend> wzAvailableGfxBackends()
 	availableBackends.push_back(video_backend::opengles);
 #   if defined(WZ_VULKAN_ENABLED) && defined(HAVE_SDL_VULKAN_H)
 	availableBackends.push_back(video_backend::vulkan);
+#   endif
+#   if defined(WZ_WEBGPU_ENABLED) && defined(__linux__)
+	// WebGPU is last, so it is never the default. It uses Wayland only.
+	if (sdl_WebGPU_VideoDriverIsSupported())
+	{
+		availableBackends.push_back(video_backend::webgpu);
+	}
 #   endif
 #else
 // Anything else:
@@ -2881,6 +2889,9 @@ static void WZ_SDL_setBackendProperty(SDL_PropertiesID props, const video_backen
 		case video_backend::vulkan:
 			SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
 			return;
+		case video_backend::webgpu:
+			// Dawn creates the surface itself, so SDL needs no OpenGL or Vulkan window
+			return;
 		case video_backend::num_backends:
 			debug(LOG_FATAL, "Should never happen");
 			break;
@@ -3634,6 +3645,10 @@ static bool wzAttemptInitializeBackend(optional<video_backend> backend, int32_t 
 		if (backend.value() == video_backend::vulkan)
 		{
 			gfxapi_backend = gfx_api::backend_type::vulkan_backend;
+		}
+		else if (backend.value() == video_backend::webgpu)
+		{
+			gfxapi_backend = gfx_api::backend_type::webgpu_backend;
 		}
 		else
 		{
