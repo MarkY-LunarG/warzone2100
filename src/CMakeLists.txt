@@ -313,7 +313,8 @@ if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
 
 	target_link_options(warzone2100 PRIVATE "SHELL:--shell-file ${PROJECT_SOURCE_DIR}/platforms/emscripten/shell.html")
 	target_link_options(warzone2100 PRIVATE "SHELL:--pre-js ${PROJECT_SOURCE_DIR}/platforms/emscripten/prejs.js")
-	target_link_options(warzone2100 PRIVATE "SHELL:--post-js ${PROJECT_SOURCE_DIR}/platforms/emscripten/postjs.js")
+	# postjs.js adds a preRun step, so it must be a --pre-js: Emscripten 6 runs --post-js code after the program starts
+	target_link_options(warzone2100 PRIVATE "SHELL:--pre-js ${PROJECT_SOURCE_DIR}/platforms/emscripten/postjs.js")
 
 	# Autorevision extern-postjs
 	add_dependencies(warzone2100 autorevision autorevision_externpostjs)

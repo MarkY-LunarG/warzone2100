@@ -1204,14 +1204,16 @@
           canvas.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
           return canvas;
         })(),
-        setStatus: function(text) {
-          if (!this.setStatus.last) this.setStatus.last = { time: Date.now(), text: '' };
-          if (text === this.setStatus.last.text) return;
+        setStatus: (function() {
+          // Keep the state in this closure, not on "this": Emscripten 6 calls setStatus as a plain function
+          var last = { time: Date.now(), text: '' };
+          return function(text) {
+          if (text === last.text) return;
           var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
           var now = Date.now();
-          if (m && now - this.setStatus.last.time < 30) return; // if this is a progress update, skip it if too soon
-          this.setStatus.last.time = now;
-          this.setStatus.last.text = text;
+          if (m && now - last.time < 30) return; // if this is a progress update, skip it if too soon
+          last.time = now;
+          last.text = text;
           if (m) {
             progressElement.value = parseInt(m[2])*100;
             progressElement.max = parseInt(m[4])*100;
@@ -1222,7 +1224,8 @@
             progressElement.hidden = true;
           }
           statusElement.innerHTML = text;
-        },
+          };
+        })(),
         totalDependencies: 0,
         monitorRunDependencies: function(left) {
           this.totalDependencies = Math.max(this.totalDependencies, left);
@@ -1724,7 +1727,9 @@
     // inspired from: https://github.com/WordPress/wordpress-playground/pull/46 (but modified)
     function monkeyPatchWASMInst(progressFun) {
       const _instantiateStreaming = WebAssembly.instantiateStreaming;
-      WebAssembly.instantiateStreaming = (response, ...args) => {
+      WebAssembly.instantiateStreaming = async (responseOrPromise, ...args) => {
+        // Emscripten passes the fetch() promise, not the Response
+        const response = await responseOrPromise;
         const file = response.url.substring(
           new URL(response.url).origin.length + 1
         );

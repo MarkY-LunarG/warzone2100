@@ -333,14 +333,16 @@ Debug aids:
 
 #### Browser
 
-The browser build uses Emscripten's `emdawnwebgpu` port.
+The browser build uses Dawn's `emdawnwebgpu` port, from a Dawn release near the pinned Dawn commit.
+The build downloads the port and patches it for newer Emscripten (tested: 6.0.8), which removed a setting that the port reads.
+To use an extracted `emdawnwebgpu_pkg` folder instead of a download, add `-DWZ_EMDAWNWEBGPU_PKG_DIR=/path/to/emdawnwebgpu_pkg`.
 The page creates the WebGPU device before the game starts.
 See [platforms/emscripten/webgpu-postjs.js](platforms/emscripten/webgpu-postjs.js).
 If the browser has no WebGPU, the game uses WebGL 2.
 
 * Prerequisites, in addition to [the Emscripten ones](platforms/emscripten/README-build.md):
-   * Emscripten 4.0.10, the version that the CI uses.
-     Emscripten 6 does not work: its `emdawnwebgpu` port reads a setting that Emscripten 6 removed.
+   * Emscripten 4.0.10 or later.
+     The CI uses 4.0.10. Emscripten 6.0.8 also works.
    * vcpkg, as in the Emscripten build instructions
    * autoconf, autoconf-archive, automake, and libtool (vcpkg needs them to build libsodium)
    * A native WebGPU build (see above).
@@ -361,6 +363,11 @@ If the browser has no WebGPU, the game uses WebGL 2.
    ```shell
    emrun --browser firefox build_web/src/index.html
    ```
+   Or, without Emscripten, run [platforms/emscripten/serve.py](platforms/emscripten/serve.py), which sends the same headers, and open http://localhost:8000/:
+   ```shell
+   python3 platforms/emscripten/serve.py build_web/src
+   ```
+   A plain `python -m http.server` does not send these headers, so the page reports "Unsupported Browser" (Wasm:Threads).
    Use a browser with WebGPU.
    Firefox on Linux ships with WebGPU off.
    Set `dom.webgpu.enabled` to `true` in `about:config`, or start Firefox with a profile that sets it.
