@@ -1426,7 +1426,8 @@ static LoadingTask<> levFinalizeLevelLoad(ResourceLoadingController& controller,
 		else
 		{
 			// Watched bench runs are meant to be followed, so they keep normal speed.
-			gameTimeSetMod(Rational(movementBenchWatching() ? 1 : 500));
+			// Other autogames run at --autogamespeed (500 by default).
+			gameTimeSetMod(Rational(movementBenchWatching() ? 1 : autogame_speed()));
 			if (getHostLaunch() != HostLaunch::Skirmish) // tests will specify the AI manually
 			{
 				if (selectedPlayer < MAX_PLAYERS && !NetPlay.players[selectedPlayer].isSpectator)

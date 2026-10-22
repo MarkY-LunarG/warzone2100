@@ -36,6 +36,10 @@ ParseCLIEarlyResult ParseCommandLineEarly(int argc, const char * const *argv);
 bool ParseCommandLineDebugFlags(int argc, const char * const *argv);
 
 bool autogame_enabled();
+/// The --autogamespeed value: the game speed of an --autogame as a multiple of normal speed.
+int autogame_speed();
+/// True when --autocamera is set: the camera moves to the fighting.
+bool autocamera_enabled();
 const std::string &saveandquit_enabled();
 const std::string &wz_skirmish_test();
 bool streamer_spectator_mode();

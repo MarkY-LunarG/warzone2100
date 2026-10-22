@@ -63,6 +63,7 @@
 #include "message.h"
 #include "bucket3d.h"
 #include "display3d.h"
+#include "autocamera.h"
 #include "warzoneconfig.h"
 
 #include "multiplay.h" //ajl
@@ -346,6 +347,7 @@ static GAMECODE renderLoop()
 			{
 				processMouseClickInput();
 			}
+			autoCameraUpdate();
 			displayWorld();
 		}
 		else

@@ -97,6 +97,10 @@ static bool wz_autogame = false;
 static std::string wz_saveandquit;
 static std::string wz_test;
 static bool wz_cli_headless = false;
+/// The game speed of an --autogame, as a multiple of normal speed
+static int wz_autogame_speed = 500;
+/// Move the camera to the fighting in a watched game
+static bool wz_autocamera = false;
 static bool wz_streamer_spectator_mode = false;
 static bool wz_lobby_slashcommands = false;
 static bool wz_lobby_slashcommands_hostexit = false;
@@ -398,6 +402,8 @@ typedef enum
 	CLI_CONTINUE,
 	CLI_AUTOHOST,
 	CLI_AUTOHEADLESS,
+	CLI_AUTOGAMESPEED,
+	CLI_AUTOCAMERA,
 	CLI_MOVEMENTBENCH,
 	CLI_MOVEMENTSEED,
 	CLI_MOVEMENTARRANGE,
@@ -512,6 +518,8 @@ static const struct poptOption *getOptionsTable()
 		},
 		{ "autogame", POPT_ARG_NONE, CLI_AUTOGAME,   N_("Run games automatically for testing"), nullptr },
 		{ "headless", POPT_ARG_NONE, CLI_AUTOHEADLESS,   N_("Headless mode (only supported when also specifying --autogame, --autohost, --skirmish)"), nullptr },
+		{ "autogamespeed", POPT_ARG_STRING, CLI_AUTOGAMESPEED,   N_("Game speed of an --autogame as a multiple of normal speed (default: 500, 1 = watchable)"), N_("speed") },
+		{ "autocamera", POPT_ARG_NONE, CLI_AUTOCAMERA,   N_("Move the camera to follow the fighting (to watch an --autogame)"), nullptr },
 		{ "saveandquit", POPT_ARG_STRING, CLI_SAVEANDQUIT, N_("Immediately save game and quit"), N_("save name") },
 		{ "skirmish", POPT_ARG_STRING, CLI_SKIRMISH,   N_("Start skirmish game with given settings file"), N_("test") },
 		{ "continue", POPT_ARG_NONE, CLI_CONTINUE,   N_("Continue the last saved game"), nullptr },
@@ -1302,6 +1310,19 @@ bool ParseCommandLine(int argc, const char * const *argv)
 			setHeadlessGameMode(true);
 			break;
 
+		case CLI_AUTOGAMESPEED:
+			token = poptGetOptArg(poptCon);
+			if (token == nullptr || atoi(token) < 1)
+			{
+				qFatal("Bad autogame speed (give a whole number of 1 or more)");
+			}
+			wz_autogame_speed = atoi(token);
+			break;
+
+		case CLI_AUTOCAMERA:
+			wz_autocamera = true;
+			break;
+
 		case CLI_MOVEMENTWATCH:
 			token = poptGetOptArg(poptCon);
 			if (token == nullptr)
@@ -1710,6 +1731,16 @@ bool ParseCommandLine(int argc, const char * const *argv)
 bool autogame_enabled()
 {
 	return wz_autogame;
+}
+
+int autogame_speed()
+{
+	return wz_autogame_speed;
+}
+
+bool autocamera_enabled()
+{
+	return wz_autocamera;
 }
 
 const std::string &saveandquit_enabled()
