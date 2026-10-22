@@ -83,6 +83,7 @@
 #include "urlhelpers.h"
 #include "game.h"
 #include "notifications.h"
+#include "clparse.h"
 #include "activity.h"
 #include "hci/groups.h"
 
@@ -227,7 +228,11 @@ void startTitleMenu()
 		addTextButton(FRONTEND_PLAYINTRO, FRONTEND_POS6X, FRONTEND_POS6Y, _("View Intro"), WBUT_TXTCENTRE | WBUT_DISABLE);
 		widgSetTip(psWScreen, FRONTEND_PLAYINTRO, _("Videos are missing, download them from http://wz2100.net"));
 
-		notifyAboutMissingVideos();
+		// An autogame plays without a user, so the notification has nobody to act on it.
+		if (!autogame_enabled())
+		{
+			notifyAboutMissingVideos();
+		}
 	}
 
 	if (findLastSave())

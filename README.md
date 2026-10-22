@@ -362,6 +362,9 @@ If the browser has no WebGPU, the game uses WebGL 2.
    emrun --browser firefox build_web/src/index.html
    ```
    Use a browser with WebGPU.
+   Firefox on Linux ships with WebGPU off.
+   Set `dom.webgpu.enabled` to `true` in `about:config`, or start Firefox with a profile that sets it.
+   Without WebGPU, the page falls back to WebGL 2.
    The browser version has no screenshots and no `--gfxdebug` shader check yet.
 
 # Licensing
