@@ -31,7 +31,8 @@
 # config directory. The Vulkan SC tests run the desktop validation layer under the emulation ICD, and with
 # VULKANSC_VALIDATION_LAYER, the Vulkan SC validation layer above the Vulkan SC loader.
 # A test passes when the game plays to the end with no validation message, no error, no Vulkan SC
-# fault, no pipeline missing from the pipeline cache, and no Vulkan object alive at shutdown.
+# fault, no pipeline missing from the pipeline cache, no Vulkan object alive at shutdown, and (Vulkan
+# SC) no device memory allocated after startup.
 # The emulation ICD's known VUID-VkPhysicalDeviceProperties2-pNext-pNext message is allowed: it passes
 # VkPhysicalDeviceVulkanSC10Properties to the desktop driver.
 set -uo pipefail
@@ -136,21 +137,28 @@ for label, found in (("validation messages", validation), ("errors", errors), ("
     if found:
         problems.append(f"{len(found)} {label} (first: {found[0][:160]})")
 
-# The object report: the last column before the reservation field is the count still alive at shutdown
+# The object report: peak live, total created, live now (at shutdown), created after startup.
+# The Vulkan SC build must allocate no device memory after startup: it has no vkFreeMemory.
+is_vulkansc = any("Vulkan SC pipeline cache:" in line for line in lines)
 in_report = False
 alive = []
+memory_after_startup = 0
 for line in lines:
     if "Vulkan objects: peak live" in line:
         in_report = True
         continue
     if in_report:
-        match = re.search(r"\]\s+(\w+)\s+(\d+)\s+(\d+)\s+(\d+)\s+\(", line)
+        match = re.search(r"\]\s+(\w+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+\(", line)
         if not match:
             break
         if int(match.group(4)) != 0:
             alive.append(f"{match.group(1)} {match.group(4)}")
+        if match.group(1) == "DeviceMemory":
+            memory_after_startup = int(match.group(5))
 if alive:
     problems.append("objects alive at shutdown: " + ", ".join(alive))
+if is_vulkansc and memory_after_startup != 0:
+    problems.append(f"{memory_after_startup} device memory allocations after startup")
 if not in_report:
     problems.append("no object report (the Vulkan backend did not run?)")
 

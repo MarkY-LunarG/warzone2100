@@ -111,6 +111,7 @@ struct KindCount
 	uint64_t live = 0;
 	uint64_t peak = 0;
 	uint64_t created = 0;
+	uint64_t createdAfterStartup = 0;
 };
 
 // The largest values that Vulkan SC reserves as limits rather than as counts.
@@ -149,6 +150,7 @@ struct State
 };
 
 State g_state;
+bool g_startupComplete = false;
 
 template <typename Handle>
 uint64_t handleKey(Handle handle)
@@ -173,6 +175,10 @@ void onCreate(CountedKind kind, uint64_t count = 1)
 	KindCount& c = countOf(kind);
 	c.live += count;
 	c.created += count;
+	if (g_startupComplete)
+	{
+		c.createdAfterStartup += count;
+	}
 	c.peak = std::max(c.peak, c.live);
 }
 
@@ -578,6 +584,16 @@ PFN_vkFreeMemory real_vkFreeMemory = nullptr;
 
 VKAPI_ATTR VkResult VKAPI_CALL counted_vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
 {
+#if defined(WZ_VULKANSC)
+	// Vulkan SC: all device memory is allocated at startup (the fixed VMA pools), and there is no
+	// vkFreeMemory to give memory back, so an allocation after startup is refused.
+	if (g_startupComplete)
+	{
+		debug(LOG_ERROR, "Vulkan SC: vkAllocateMemory of %" PRIu64 " bytes (memory type %u) after startup is refused: device memory must come from the memory pools",
+			static_cast<uint64_t>(pAllocateInfo->allocationSize), pAllocateInfo->memoryTypeIndex);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+#endif
 	const VkResult result = real_vkAllocateMemory(device, pAllocateInfo, pAllocator, pMemory);
 	if (result == VK_SUCCESS)
 	{
@@ -693,13 +709,18 @@ void installObjectCounters(WZ_vk::DispatchLoaderDynamic& vkDynLoader)
 #undef WZ_INSTALL_COUNTED
 }
 
+void markObjectCountersStartupComplete()
+{
+	g_startupComplete = true;
+}
+
 void reportObjectCounters(code_part part)
 {
-	debug(part, "Vulkan objects: peak live, total created, live now (Vulkan SC reservation field)");
+	debug(part, "Vulkan objects: peak live, total created, live now, created after startup (Vulkan SC reservation field)");
 	for (size_t i = 0; i < kKindInfo.size(); ++i)
 	{
 		const KindCount& c = g_state.counts[i];
-		debug(part, "  %-26s %8" PRIu64 " %8" PRIu64 " %8" PRIu64 "  (%s)", kKindInfo[i].name, c.peak, c.created, c.live, kKindInfo[i].reservationField);
+		debug(part, "  %-26s %8" PRIu64 " %8" PRIu64 " %8" PRIu64 " %8" PRIu64 "  (%s)", kKindInfo[i].name, c.peak, c.created, c.live, c.createdAfterStartup, kKindInfo[i].reservationField);
 	}
 	const Limits& limits = g_state.limits;
 	debug(part, "  maxImageViewMipLevels %u, maxImageViewArrayLayers %u, maxLayeredImageViewMipLevels %u",

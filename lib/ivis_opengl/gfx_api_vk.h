@@ -723,10 +723,10 @@ struct VkSurfaceGpu
 	std::unique_ptr<gfx_api::abstract_texture> texture;
 	std::vector<WZ_vk::UniqueImageView> cascadeViews; // ShadowMap only
 
-	// Owned GPU resources for attachment-style allocates (MSAA color / depth).
+	// Owned GPU resources for attachment-style allocates (MSAA color / depth), allocated with VMA.
 	// Unused when texture owns VMA resources (SceneColor / ShadowMap) or WsiPresentColor.
 	vk::Image image {};
-	vk::DeviceMemory memory {};
+	VmaAllocation allocation = VK_NULL_HANDLE;
 	vk::ImageView view {};
 };
 
