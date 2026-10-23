@@ -430,7 +430,7 @@ private:
 
 	vk::ShaderModule get_module(const std::string& name, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 
-	static std::vector<vk::PipelineShaderStageCreateInfo> get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule);
+	static std::vector<vk::PipelineShaderStageCreateInfo> get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule, bool hasTessellationStages);
 
 	static std::array<vk::PipelineColorBlendAttachmentState, 1> to_vk(const REND_MODE& blend_state, const uint8_t& color_mask);
 
@@ -833,6 +833,11 @@ struct VkRoot final : gfx_api::context
 	gfx_api::vk::sc::DeviceReservation vulkanSCDeviceReservation() const;
 	void installVulkanSCRemovedEntryPoints();
 	void logVulkanSCProperties();
+	bool loadVulkanSCPipelineCache();
+	// The pipeline cache: its data must stay where it is while the device lives (application storage)
+	std::vector<char> vulkanSCPipelineCacheData;
+	uint32_t vulkanSCPipelineCount = 0;
+	vk::PipelineCache vulkanSCPipelineCache;
 #endif
 
 	// default textures

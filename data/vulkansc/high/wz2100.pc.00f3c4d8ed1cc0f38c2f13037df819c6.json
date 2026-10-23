@@ -8,7 +8,7 @@
                 "pAttachments": [
                     {
                         "flags": "0",
-                        "format": "VK_FORMAT_A2B10G10R10_UNORM_PACK32",
+                        "format": "VK_FORMAT_B8G8R8A8_UNORM",
                         "samples": "VK_SAMPLE_COUNT_1_BIT",
                         "loadOp": "VK_ATTACHMENT_LOAD_OP_LOAD",
                         "storeOp": "VK_ATTACHMENT_STORE_OP_STORE",
@@ -134,7 +134,7 @@
                 "pNext": {
                     "sType": "VK_STRUCTURE_TYPE_PIPELINE_OFFLINE_CREATE_INFO",
                     "pNext": "NULL",
-                    "pipelineIdentifier": [166, 204, 255, 14, 106, 180, 94, 51, 151, 119, 159, 50, 116, 28, 54, 72],
+                    "pipelineIdentifier": [0, 243, 196, 216, 237, 28, 192, 243, 140, 47, 19, 3, 125, 248, 25, 198],
                     "matchControl": "VK_PIPELINE_MATCH_CONTROL_APPLICATION_UUID_EXACT_MATCH",
                     "poolEntrySize": "1048576"
                 },
@@ -164,31 +164,20 @@
                     "sType": "VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO",
                     "pNext": "NULL",
                     "flags": 0,
-                    "vertexBindingDescriptionCount": 2,
+                    "vertexBindingDescriptionCount": 1,
                     "pVertexBindingDescriptions": [
                         {
                             "binding": 0,
-                            "stride": 8,
-                            "inputRate": "VK_VERTEX_INPUT_RATE_VERTEX"
-                        },
-                        {
-                            "binding": 1,
-                            "stride": 8,
+                            "stride": 4,
                             "inputRate": "VK_VERTEX_INPUT_RATE_VERTEX"
                         }
                     ],
-                    "vertexAttributeDescriptionCount": 2,
+                    "vertexAttributeDescriptionCount": 1,
                     "pVertexAttributeDescriptions": [
                         {
                             "location": 0,
                             "binding": 0,
-                            "format": "VK_FORMAT_R32G32_SFLOAT",
-                            "offset": 0
-                        },
-                        {
-                            "location": 1,
-                            "binding": 1,
-                            "format": "VK_FORMAT_R32G32_SFLOAT",
+                            "format": "VK_FORMAT_R8G8B8A8_UNORM",
                             "offset": 0
                         }
                     ]
@@ -309,7 +298,7 @@
         "ShaderFileNames": [
             {
                 "stage": "VK_SHADER_STAGE_VERTEX_BIT",
-                "filename": "gfx_text.vert.spv"
+                "filename": "rect.vert.spv"
             },
             {
                 "stage": "VK_SHADER_STAGE_FRAGMENT_BIT",
@@ -318,5 +307,5 @@
         ]
     },
     "EnabledExtensions": [],
-    "PipelineUUID": [166, 204, 255, 14, 106, 180, 94, 51, 151, 119, 159, 50, 116, 28, 54, 72]
+    "PipelineUUID": [0, 243, 196, 216, 237, 28, 192, 243, 140, 47, 19, 3, 125, 248, 25, 198]
 }
