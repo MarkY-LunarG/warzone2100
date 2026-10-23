@@ -18,13 +18,18 @@
 #                      Without it, the Vulkan SC tests are skipped.
 #   VULKANSC_LOADER    The Vulkan SC loader (VulkanSC-Loader/build/<type>/loader/libvulkansc.so.1).
 #                      The default is the system's.
+#   VULKANSC_VALIDATION_LAYER  The Vulkan SC validation layer's directory
+#                      (VulkanSC-ValidationLayers/build/<type>/layers). With it, the Vulkan SC validation runs
+#                      also enable it (--gfxdebug), above the Vulkan SC loader: it checks the Vulkan SC rules
+#                      (the reservation, the removed commands, the pipeline cache and its SPIR-V).
 #   GFXR_VULKANSC_BUILD  A Premium-GFXR build with Vulkan SC (GFXRECON_ENABLE_VULKANSC=ON). With it, the
 #                      Vulkan SC build is also captured through the Vulkan SC capture layer, the capture is
 #                      replayed, and gfxrecon-premium-info checks it (no faults, no error messages, every
 #                      pipeline cache source). Needs VULKANSC_LOADER: the layer forwards to the loader.
 #
 # Every test is an autogame (or, for the gamepad test, a gamepad script) with the high graphics profile (tools/vulkansc/profile_high.cfg), in a new
-# config directory. The Vulkan SC tests run the desktop validation layer under the emulation ICD.
+# config directory. The Vulkan SC tests run the desktop validation layer under the emulation ICD, and with
+# VULKANSC_VALIDATION_LAYER, the Vulkan SC validation layer above the Vulkan SC loader.
 # A test passes when the game plays to the end with no validation message, no error, no Vulkan SC
 # fault, no pipeline missing from the pipeline cache, and no Vulkan object alive at shutdown.
 # The emulation ICD's known VUID-VkPhysicalDeviceProperties2-pNext-pNext message is allowed: it passes
@@ -121,7 +126,8 @@ if exit_code != 0:
 if not any(end in line for line in lines):
     problems.append("the game did not end")
 validation = [l for l in lines if re.search(r"VUID-|Validation Error", l) and not allowed.search(l)]
-errors = [l for l in lines if re.match(r"^(error|fatal) ", l) and not allowed.search(l)]
+# "last message repeated" stands for the message above it, which is checked itself
+errors = [l for l in lines if re.match(r"^(error|fatal) ", l) and not allowed.search(l) and "last message repeated" not in l]
 faults = [l for l in lines if "Vulkan SC fault" in l]
 missing = [l for l in lines if "could not create pipeline" in l]
 emulation = [l for l in lines if "VKSC-EMU-" in l]
@@ -225,10 +231,17 @@ else
 	if [[ -n "${VULKANSC_LOADER:-}" ]]; then
 		SC_ENV+=(WZ_VULKANSC_LIBRARY="${VULKANSC_LOADER}")
 	fi
-	run_game sc_highground "${SC_GAME}" "${SC_ENV[@]}" -- --skirmish=highground.json --gfxbackend=vulkansc --debug=3d
-	check_log sc_highground "Vulkan SC: highground, validation underneath"
-	run_game sc_longbattle "${SC_GAME}" "${SC_ENV[@]}" -- --skirmish=longbattle.json --gfxbackend=vulkansc --debug=3d
-	check_log sc_longbattle "Vulkan SC: long battle, validation underneath"
+	SC_ARGS=(--gfxbackend=vulkansc --debug=3d)
+	SC_VALIDATION="validation underneath"
+	if [[ -n "${VULKANSC_VALIDATION_LAYER:-}" ]]; then
+		SC_ENV+=(VK_LAYER_PATH="${VULKANSC_VALIDATION_LAYER}")
+		SC_ARGS+=(--gfxdebug)
+		SC_VALIDATION="Vulkan SC validation, and validation underneath"
+	fi
+	run_game sc_highground "${SC_GAME}" "${SC_ENV[@]}" -- --skirmish=highground.json "${SC_ARGS[@]}"
+	check_log sc_highground "Vulkan SC: highground, ${SC_VALIDATION}"
+	run_game sc_longbattle "${SC_GAME}" "${SC_ENV[@]}" -- --skirmish=longbattle.json "${SC_ARGS[@]}"
+	check_log sc_longbattle "Vulkan SC: long battle, ${SC_VALIDATION}"
 
 	# The same frame from both builds: the desktop one at the display mode's size and with its swapchain format
 	SC_SIZE="$(sed -n 's/.*Vulkan SC display: .*, mode \([0-9]*x[0-9]*\) at .*/\1/p' "${WORK_DIR}/sc_highground.log" | head -1)"
@@ -247,8 +260,8 @@ else
 		# positions are for a 960x540 screen.
 		if [[ "${SC_SIZE}" == "960x540" ]]; then
 			run_game sc_gamepad "${SC_GAME}" "${SC_ENV[@]}" WZ_DEBUG_GAMEPAD_SCRIPT="${SRC_DIR}/tools/vulkansc/gamepad_skirmish.gpad" -- \
-				--gfxbackend=vulkansc --debug=3d
-			check_log sc_gamepad "Vulkan SC: gamepad only, title screen to skirmish and back, validation underneath" "screenshot gamepad_7_title"
+				"${SC_ARGS[@]}"
+			check_log sc_gamepad "Vulkan SC: gamepad only, title screen to skirmish and back, ${SC_VALIDATION}" "screenshot gamepad_7_title"
 		else
 			echo "SKIP  Vulkan SC gamepad test: it needs a 960x540 display mode, not ${SC_SIZE}"
 		fi
