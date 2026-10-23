@@ -39,6 +39,7 @@
 #include "vk/render_pass_layout_cache.h"
 #include "vk/screen_frame_coordinator.h"
 #include "vk/screenshot_readback.h"
+#include "vk/shared_pipeline_objects.h"
 #include "vk/warm_entry.h"
 #include <algorithm>
 #include <sstream>
@@ -154,6 +155,9 @@ public:
 	void flushAutomappedMemory();
 	void clean();
 
+	// The most bytes used between two calls of clean(), that is, in one frame (a fixed-size ring needs this much).
+	uint64_t peakUsedPerFrame() const { return peakUsed; }
+
 private:
 	VmaAllocator allocator;
 	const uint32_t minimumBlockSize;
@@ -165,6 +169,7 @@ private:
 	uint32_t currentWritePosInLastBlock = 0;
 
 	uint32_t minimumFirstBlockSize = 0;
+	uint64_t peakUsed = 0;
 
 	const bool autoMap = false;
 };
@@ -242,11 +247,17 @@ struct perFrameResources_t
 	public:
 		std::vector<DescriptorPoolDetails> pools;
 		size_t currPool = 0;
+		// The most sets and descriptors allocated between two resets, that is, in one frame.
+		size_t peakSetsPerFrame = 0;
+		size_t peakDescriptorsPerFrame = 0;
 	};
 	DescriptorPoolsContainer combinedImageSamplerDescriptorPools;
 	DescriptorPoolsContainer uniformDynamicDescriptorPools;
 	uint32_t numalloc = 0;
+	// Neither pool lets a command buffer be reset on its own (Vulkan SC may not support it):
+	// each is reset as a whole. cmdCopy has a pool of its own because it is reset while cmdDraw is recording.
 	vk::CommandPool pool;
+	vk::CommandPool copyPool;
 	vk::Fence previousSubmission;
 	vk::Semaphore imageAcquireSemaphore;
 	std::vector</*WZ_vk::UniqueBuffer*/vk::Buffer> buffer_to_delete;
@@ -354,7 +365,12 @@ struct buffering_mechanism
 
 	static perFrameResources_t& get_current_resources();
 	static perSwapchainImageResources_t& get_swapchain_resources(uint32_t swapchainIndex);
-	static void init(vk::Device dev, const VmaAllocator& allocator, size_t swapchainImageCount, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	// The frame slots live as long as the device; the per-image resources as long as the swapchain.
+	static void initFrames(vk::Device dev, const VmaAllocator& allocator, size_t numFrames, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	static void initSwapchainImages(vk::Device dev, size_t swapchainImageCount, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	// Returns every frame slot to the state initFrames() leaves it in. The device must be idle.
+	static void resetFramesAfterIdle(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	static void destroySwapchainImages();
 	static void destroy(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	static void swap(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	static bool isInitialized();
@@ -763,9 +779,16 @@ struct VkRoot final : gfx_api::context
 		std::shared_ptr<VkhRenderPassCompat> rp_compat_info;
 		vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 		size_t identifier;
+		// The pipelines of this render pass are stored under the id of the first render pass that is
+		// compatible with it (Vulkan render pass compatibility: the same attachment formats and samples),
+		// so compatible render passes share one pipeline instead of building one each.
+		size_t psoSlot;
+		// Stable name of the compatibility class (gfx_api::vk::renderPassClassName()).
+		std::string className;
 
 		RenderPassDetails(size_t _identifier)
 		: identifier(_identifier)
+		, psoSlot(_identifier)
 		{ }
 	};
 
@@ -794,6 +817,9 @@ struct VkRoot final : gfx_api::context
 	float gpuTimestampPeriod = 0.f;
 	uint64_t gpuTimestampMask = ~uint64_t(0);
 
+	// Layouts, samplers, and shader modules of all pipelines. Mutable because VkPSO holds a const VkRoot.
+	mutable gfx_api::vk::SharedPipelineObjects sharedPipelineObjects;
+
 	// default textures
 	VkTexture* pDefaultTexture = nullptr;
 	VkTextureArray* pDefaultArrayTexture = nullptr;
@@ -814,10 +840,13 @@ struct VkRoot final : gfx_api::context
 	struct BuiltPipelineRegistry
 	{
 		const gfx_api::pipeline_create_info createInfo;
+		// Stable name of the recipe (gfx_api::vk::pipelineRecipeName()).
+		const std::string name;
 		std::vector<VkPSO *> renderPassPSO;
 
-		BuiltPipelineRegistry(const gfx_api::pipeline_create_info& _createInfo, size_t numRenderPasses)
+		BuiltPipelineRegistry(const gfx_api::pipeline_create_info& _createInfo, std::string _name, size_t numRenderPasses)
 		: createInfo(_createInfo)
+		, name(std::move(_name))
 		{
 			renderPassPSO.resize(numRenderPasses, nullptr);
 		}
@@ -993,6 +1022,7 @@ private:
 	/// Does not clear _screenFrameOpen (owned by beginScreenFrame / finish / shutdown).
 	void finalizeActiveRecording();
 	void destroySwapchainAndSwapchainSpecificStuff(bool doDestroySwapchain);
+	void reportFrameResourcePeaks(code_part part) const;
 	void createNewSwapchainAndSwapchainSpecificStuff(const vk::Result& reason); // Throws on failure
 
 public:

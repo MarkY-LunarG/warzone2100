@@ -55,6 +55,7 @@
 
 #include "gfx_api_vk.h"
 #include "shader_catalog.h"
+#include "png_util.h"
 #include "render_graph/layout_subresource.h"
 #include "render_graph/pass_resolve.h"
 #include "render_graph/scene_post_effects.h"
@@ -62,6 +63,8 @@
 #include "vk/layout_key_builder.h"
 #include "vk/layout_sync.h"
 #include "vk/layout_translation.h"
+#include "vk/object_counters.h"
+#include "vk/pipeline_names.h"
 #include "vk/transfer_recorder.h"
 #include "vk/transfer_recording_context.h"
 #include "lib/framework/physfs_ext.h"
@@ -803,6 +806,7 @@ void BlockBufferAllocator::clean()
 	{
 		totalMemoryUsed = totalMemoryAllocated - (blocks.back().size - currentWritePosInLastBlock);
 	}
+	peakUsed = std::max(peakUsed, totalMemoryUsed);
 
 	uint32_t old_minimumFirstBlockSize = minimumFirstBlockSize;
 	if (blocks.size() > 1)
@@ -863,18 +867,27 @@ perFrameResources_t::perFrameResources_t(vk::Device& _dev, const VmaAllocator& a
 	pool = dev.createCommandPool(
 		vk::CommandPoolCreateInfo()
 		.setQueueFamilyIndex(graphicsQueueFamilyIndex)
-		.setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer)
 		, nullptr, *pVkDynLoader
 	);
-	const auto buffer = dev.allocateCommandBuffers(
+	copyPool = dev.createCommandPool(
+		vk::CommandPoolCreateInfo()
+		.setQueueFamilyIndex(graphicsQueueFamilyIndex)
+		, nullptr, *pVkDynLoader
+	);
+	cmdDraw = dev.allocateCommandBuffers(
 		vk::CommandBufferAllocateInfo()
 		.setCommandPool(pool)
-		.setCommandBufferCount(2)
+		.setCommandBufferCount(1)
 		.setLevel(vk::CommandBufferLevel::ePrimary)
 		, *pVkDynLoader
-	);
-	cmdDraw = buffer[0];
-	cmdCopy = buffer[1];
+	)[0];
+	cmdCopy = dev.allocateCommandBuffers(
+		vk::CommandBufferAllocateInfo()
+		.setCommandPool(copyPool)
+		.setCommandBufferCount(1)
+		.setLevel(vk::CommandBufferLevel::ePrimary)
+		, *pVkDynLoader
+	)[0];
 	pCurrentDrawCmdBuffer = &cmdDraw;
 	previousSubmission = dev.createFence(
 		vk::FenceCreateInfo().setFlags(vk::FenceCreateFlagBits::eSignaled),
@@ -1032,6 +1045,7 @@ void perFrameResources_t::clean()
 perFrameResources_t::~perFrameResources_t()
 {
 	dev.destroyCommandPool(pool, nullptr, *pVkDynLoader);
+	dev.destroyCommandPool(copyPool, nullptr, *pVkDynLoader);
 	for (const auto& descriptorPoolDetails : combinedImageSamplerDescriptorPools.pools)
 	{
 		dev.destroyDescriptorPool(descriptorPoolDetails.poolHandle, nullptr, *pVkDynLoader);
@@ -1047,6 +1061,16 @@ perFrameResources_t::~perFrameResources_t()
 
 void perFrameResources_t::DescriptorPoolsContainer::reset(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
 {
+	size_t setsThisFrame = 0;
+	size_t descriptorsThisFrame = 0;
+	for (const auto& descriptorPool : pools)
+	{
+		setsThisFrame += descriptorPool.requestedSets;
+		descriptorsThisFrame += descriptorPool.requestedDescriptors;
+	}
+	peakSetsPerFrame = std::max(peakSetsPerFrame, setsThisFrame);
+	peakDescriptorsPerFrame = std::max(peakDescriptorsPerFrame, descriptorsThisFrame);
+
 	for (auto& descriptorPool : pools)
 	{
 		dev.resetDescriptorPool(descriptorPool.poolHandle, vk::DescriptorPoolResetFlags(), vkDynLoader);
@@ -1094,21 +1118,63 @@ perSwapchainImageResources_t::~perSwapchainImageResources_t()
 
 // MARK: buffering_mechanism
 
-void buffering_mechanism::init(vk::Device dev, const VmaAllocator& allocator, size_t swapChainImageCount, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+void buffering_mechanism::initFrames(vk::Device dev, const VmaAllocator& allocator, size_t numFrames, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
 {
+	ASSERT(perFrameResources.empty(), "Frame slots are already initialized");
 	currentFrame = 0;
 
-	for (size_t i = 0; i < std::min<size_t>(MAX_FRAMES_IN_FLIGHT, swapChainImageCount); ++i)
+	for (size_t i = 0; i < numFrames; ++i)
 	{
 		perFrameResources.emplace_back(new perFrameResources_t(dev, allocator, graphicsQueueFamilyIndex, vkDynLoader));
-	}
-	for (size_t i = 0; i < swapChainImageCount; ++i)
-	{
-		perSwapchainImageResources.emplace_back(new perSwapchainImageResources_t(dev, vkDynLoader));
 	}
 
 	const auto fences = std::array<vk::Fence, 1> { buffering_mechanism::get_current_resources().previousSubmission };
 	dev.resetFences(fences, vkDynLoader);
+}
+
+void buffering_mechanism::initSwapchainImages(vk::Device dev, size_t swapchainImageCount, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	ASSERT(perSwapchainImageResources.empty(), "Swapchain image resources are already initialized");
+	for (size_t i = 0; i < swapchainImageCount; ++i)
+	{
+		perSwapchainImageResources.emplace_back(new perSwapchainImageResources_t(dev, vkDynLoader));
+	}
+}
+
+void buffering_mechanism::resetFramesAfterIdle(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	for (auto& frameResources : perFrameResources)
+	{
+		dev.resetCommandPool(frameResources->pool, vk::CommandPoolResetFlags(), vkDynLoader);
+		dev.resetCommandPool(frameResources->copyPool, vk::CommandPoolResetFlags(), vkDynLoader);
+		frameResources->resetDescriptorPools();
+		frameResources->drawCmdBufferBegun = false;
+		frameResources->copyCmdBufferBegun = false;
+		frameResources->transferWorkRecorded = false;
+		frameResources->copyCmdBufferSubmittedSincePoolReset = false;
+		frameResources->swapchainImageAcquired = false;
+		frameResources->clean();
+		frameResources->numalloc = 0;
+
+		// A frame that was abandoned leaves its fence unsignaled, and an acquire that succeeded
+		// without a submit leaves its semaphore signaled, so make both again.
+		dev.destroyFence(frameResources->previousSubmission, nullptr, vkDynLoader);
+		frameResources->previousSubmission = dev.createFence(
+			vk::FenceCreateInfo().setFlags(vk::FenceCreateFlagBits::eSignaled),
+			nullptr, vkDynLoader
+		);
+		dev.destroySemaphore(frameResources->imageAcquireSemaphore, nullptr, vkDynLoader);
+		frameResources->imageAcquireSemaphore = dev.createSemaphore(vk::SemaphoreCreateInfo(), nullptr, vkDynLoader);
+	}
+
+	currentFrame = 0;
+	const auto fences = std::array<vk::Fence, 1> { buffering_mechanism::get_current_resources().previousSubmission };
+	dev.resetFences(fences, vkDynLoader);
+}
+
+void buffering_mechanism::destroySwapchainImages()
+{
+	perSwapchainImageResources.clear();
 }
 
 size_t buffering_mechanism::get_current_frame_num()
@@ -1135,6 +1201,7 @@ void buffering_mechanism::swap(vk::Device dev, const WZ_vk::DispatchLoaderDynami
 	dev.resetFences(fences, vkDynLoader);
 	buffering_mechanism::get_current_resources().resetDescriptorPools();
 	dev.resetCommandPool(buffering_mechanism::get_current_resources().pool, vk::CommandPoolResetFlagBits(), vkDynLoader);
+	dev.resetCommandPool(buffering_mechanism::get_current_resources().copyPool, vk::CommandPoolResetFlagBits(), vkDynLoader);
 	buffering_mechanism::get_current_resources().drawCmdBufferBegun = false;
 	buffering_mechanism::get_current_resources().copyCmdBufferBegun = false;
 	buffering_mechanism::get_current_resources().transferWorkRecorded = false;
@@ -1290,16 +1357,52 @@ std::vector<uint32_t> VkPSO::readShaderBuf(const std::string& name)
 	return buffer;
 }
 
+// The specialization constant values a pipeline is built with. Values that give the same shader output
+// are made equal, so that fewer distinct pipelines exist (Vulkan SC compiles each one offline):
+// - With shadow mode 0, or a filter size of 0, the shader ignores the filter size and the cascade count.
+// - Shadow mode 1 has three filter kernels: size <= 3, 4 to 5, and > 5.
+static gfx_api::lighting_constants pipelineSpecializationValues(gfx_api::lighting_constants values)
+{
+	const gfx_api::lighting_constants shaderDefaults;
+	if (values.shadowMode == 0 || values.shadowFilterSize == 0)
+	{
+		values.shadowMode = 0;
+		values.shadowFilterSize = shaderDefaults.shadowFilterSize;
+		values.shadowCascadesCount = shaderDefaults.shadowCascadesCount;
+	}
+	else if (values.shadowMode == 1)
+	{
+		values.shadowFilterSize = (values.shadowFilterSize <= 3) ? 3 : ((values.shadowFilterSize <= 5) ? 5 : 7);
+	}
+	return values;
+}
+
+// The SpecId decorations of a SPIR-V module.
+static std::vector<uint32_t> spirvSpecializationConstantIds(const std::vector<uint32_t>& code)
+{
+	constexpr uint32_t opDecorate = 71;
+	constexpr uint32_t decorationSpecId = 1;
+	std::vector<uint32_t> ids;
+	for (size_t i = 5; i < code.size(); )
+	{
+		const uint32_t wordCount = code[i] >> 16;
+		const uint32_t opcode = code[i] & 0xFFFF;
+		if (wordCount == 0)
+		{
+			break;
+		}
+		if (opcode == opDecorate && wordCount >= 4 && i + 3 < code.size() && code[i + 2] == decorationSpecId)
+		{
+			ids.push_back(code[i + 3]);
+		}
+		i += wordCount;
+	}
+	return ids;
+}
+
 vk::ShaderModule VkPSO::get_module(const std::string& name, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
 {
-	const auto tmp = readShaderBuf(name);
-	ASSERT_OR_RETURN(vk::ShaderModule(), tmp.size() > 0, "Failed to read shader: %s", name.c_str());
-	return dev.createShaderModule(
-		vk::ShaderModuleCreateInfo()
-		.setCodeSize(tmp.size() * 4)
-		.setPCode(tmp.data())
-		, nullptr, vkDynLoader
-	);
+	return root->sharedPipelineObjects.shaderModule(dev, vkDynLoader, name, &VkPSO::readShaderBuf);
 }
 
 std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule)
@@ -1752,11 +1855,8 @@ VkPSO::VkPSO(vk::Device _dev,
 				.setDescriptorType(vk::DescriptorType::eUniformBufferDynamic)
 				.setStageFlags(vk::ShaderStageFlagBits::eAllGraphics)
 		};
-		auto set_layout = dev.createDescriptorSetLayout(
-			vk::DescriptorSetLayoutCreateInfo()
-				.setBindingCount(1)
-				.setPBindings(cbuffer_layout_desc.data())
-			, nullptr, *pVkDynLoader);
+		auto set_layout = root->sharedPipelineObjects.descriptorSetLayout(dev, *pVkDynLoader,
+			std::vector<vk::DescriptorSetLayoutBinding>(cbuffer_layout_desc.begin(), cbuffer_layout_desc.end()));
 		cbuffer_set_layout.push_back(set_layout);
 		layout_desc.push_back(set_layout);
 	}
@@ -1775,7 +1875,8 @@ VkPSO::VkPSO(vk::Device _dev,
 	samplers.reserve(texture_desc.size());
 	for (const auto& texture : texture_desc)
 	{
-		samplers.emplace_back(dev.createSampler(to_vk(texture.sampler, texture.target, texture.border), nullptr, *pVkDynLoader));
+		const std::vector<uint64_t> samplerKey = { static_cast<uint64_t>(texture.sampler), static_cast<uint64_t>(texture.target), static_cast<uint64_t>(texture.border) };
+		samplers.emplace_back(root->sharedPipelineObjects.sampler(dev, *pVkDynLoader, samplerKey, to_vk(texture.sampler, texture.target, texture.border)));
 
 		textures_layout_desc.emplace_back(
 			vk::DescriptorSetLayoutBinding()
@@ -1809,20 +1910,13 @@ VkPSO::VkPSO(vk::Device _dev,
 		}
 	}
 
-	textures_set_layout = dev.createDescriptorSetLayout(
-		vk::DescriptorSetLayoutCreateInfo()
-			.setBindingCount(static_cast<uint32_t>(textures_layout_desc.size()))
-			.setPBindings(textures_layout_desc.data())
-		, nullptr, *pVkDynLoader);
+	textures_set_layout = root->sharedPipelineObjects.descriptorSetLayout(dev, *pVkDynLoader, textures_layout_desc);
 	textures_first_set = static_cast<uint32_t>(layout_desc.size()); // Store descriptor set index for textures
 	layout_desc.push_back(textures_set_layout);
 
 
-	const auto layoutCreateInfo = vk::PipelineLayoutCreateInfo()
-		.setPSetLayouts(layout_desc.data())
-		.setSetLayoutCount(static_cast<uint32_t>(layout_desc.size()));
-	ASSERT(layoutCreateInfo.setLayoutCount <= limits.maxBoundDescriptorSets, "Pipeline layout set count (%" PRIu32") exceeds limits.maxBoundDescriptorSets (%" PRIu32")", layoutCreateInfo.setLayoutCount, limits.maxBoundDescriptorSets);
-	layout = dev.createPipelineLayout(layoutCreateInfo, nullptr, *pVkDynLoader);
+	ASSERT(layout_desc.size() <= limits.maxBoundDescriptorSets, "Pipeline layout set count (%zu) exceeds limits.maxBoundDescriptorSets (%" PRIu32")", layout_desc.size(), limits.maxBoundDescriptorSets);
+	layout = root->sharedPipelineObjects.pipelineLayout(dev, *pVkDynLoader, layout_desc);
 
 	const auto dynamicStates = std::array<vk::DynamicState, 3>{vk::DynamicState::eScissor, vk::DynamicState::eViewport, vk::DynamicState::eDepthBias};
 	const auto multisampleState = vk::PipelineMultisampleStateCreateInfo()
@@ -1907,6 +2001,20 @@ VkPSO::VkPSO(vk::Device _dev,
 	fragmentShader = get_module(fragmentSpv, *pVkDynLoader);
 	auto pipelineStages = get_stages(vertexShader, tessControlShader, tessEvalShader, fragmentShader);
 
+	// Every specialization constant the fragment shader declares must be given a value: Vulkan SC compiles
+	// the pipeline offline from these values, and its layer reports a pipeline without them.
+	if (!fragmentSpv.empty())
+	{
+		uint8_t declaredMask = 0;
+		for (const uint32_t id : spirvSpecializationConstantIds(readShaderBuf(fragmentSpv)))
+		{
+			declaredMask |= (id >= 1 && id <= 4) ? static_cast<uint8_t>(1u << (id - 1)) : 0x80;
+		}
+		ASSERT(declaredMask == shaderInfo.spec_constants, "%s declares specialization constants 0x%x, but the shader catalog gives 0x%x",
+			fragmentSpv.c_str(), static_cast<unsigned>(declaredMask), static_cast<unsigned>(shaderInfo.spec_constants));
+	}
+	const gfx_api::lighting_constants specValues = pipelineSpecializationValues(root->shadowConstants);
+
 	std::vector<char> specializationConstantsDataBuffer;
 	std::vector<vk::SpecializationMapEntry> specializationEntries;
 	vk::SpecializationInfo spec_info = vk::SpecializationInfo();
@@ -1918,22 +2026,22 @@ VkPSO::VkPSO(vk::Device _dev,
 	};
 	if (shaderInfo.spec_constants & gfx_api::spec_shadow_mode)
 	{
-		appendSpecializationConstant_uint32(1, root->shadowConstants.shadowMode);
+		appendSpecializationConstant_uint32(1, specValues.shadowMode);
 		hasSpecializationConstant_ShadowConstants = true;
 	}
 	if (shaderInfo.spec_constants & gfx_api::spec_shadow_filter_size)
 	{
-		appendSpecializationConstant_uint32(2, root->shadowConstants.shadowFilterSize);
+		appendSpecializationConstant_uint32(2, specValues.shadowFilterSize);
 		hasSpecializationConstant_ShadowConstants = true;
 	}
 	if (shaderInfo.spec_constants & gfx_api::spec_shadow_cascades)
 	{
-		appendSpecializationConstant_uint32(3, root->shadowConstants.shadowCascadesCount);
+		appendSpecializationConstant_uint32(3, specValues.shadowCascadesCount);
 		hasSpecializationConstant_ShadowConstants = true;
 	}
 	if (shaderInfo.spec_constants & gfx_api::spec_point_light_enabled)
 	{
-		appendSpecializationConstant_uint32(4, static_cast<uint32_t>(root->shadowConstants.isPointLightPerPixelEnabled));
+		appendSpecializationConstant_uint32(4, static_cast<uint32_t>(specValues.isPointLightPerPixelEnabled));
 		hasSpecializationConstant_PointLightConstants = true;
 	}
 	if (!specializationEntries.empty())
@@ -1981,29 +2089,8 @@ VkPSO::VkPSO(vk::Device _dev,
 
 VkPSO::~VkPSO()
 {
+	// The layouts, samplers, and shader modules belong to VkRoot::sharedPipelineObjects.
 	dev.destroyPipeline(object, nullptr, *pVkDynLoader);
-	dev.destroyShaderModule(vertexShader, nullptr, *pVkDynLoader);
-	if (tessControlShader)
-	{
-		dev.destroyShaderModule(tessControlShader, nullptr, *pVkDynLoader);
-	}
-	if (tessEvalShader)
-	{
-		dev.destroyShaderModule(tessEvalShader, nullptr, *pVkDynLoader);
-	}
-	dev.destroyShaderModule(fragmentShader, nullptr, *pVkDynLoader);
-	dev.destroyPipelineLayout(layout, nullptr, *pVkDynLoader);
-	dev.destroyDescriptorSetLayout(textures_set_layout, nullptr, *pVkDynLoader);
-	for (auto & sampler : samplers)
-	{
-		dev.destroySampler(sampler, nullptr, *pVkDynLoader);
-	}
-	samplers.clear();
-	for (auto& descSetLayout : cbuffer_set_layout)
-	{
-		dev.destroyDescriptorSetLayout(descSetLayout, nullptr, *pVkDynLoader);
-	}
-	cbuffer_set_layout.clear();
 }
 
 // MARK: VkBuf
@@ -2026,11 +2113,23 @@ inline vk::BufferUsageFlags to_vk(const gfx_api::buffer::usage& usage)
 	return vk::BufferUsageFlags(); // silence warning
 }
 
-void VkBuf::allocateBufferObject(const std::size_t& size)
+void VkBuf::allocateBufferObject(const std::size_t& requestedSize)
 {
-	if (buffer_size == size)
+	// buffer_size is the capacity: a smaller upload reuses the buffer. A buffer that has to grow
+	// (its size changes from upload to upload, such as instance data) grows to the next power of two,
+	// so that it is not made again almost every frame. The first allocation is exact.
+	if (object && requestedSize <= buffer_size)
 	{
 		return;
+	}
+	size_t size = requestedSize;
+	if (object)
+	{
+		size = 1;
+		while (size < requestedSize)
+		{
+			size <<= 1;
+		}
 	}
 
 	buffering_mechanism::get_current_resources().buffer_to_delete.emplace_back(std::move(object));
@@ -2916,18 +3015,26 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 	}
 	if (!psoID.has_value())
 	{
-		createdPipelines.emplace_back(createInfo, renderPasses.size());
+		std::string name = gfx_api::vk::pipelineRecipeName(createInfo);
+		for (const auto& existing : createdPipelines)
+		{
+			ASSERT(existing.name != name || gfx_api::vk::samePipelineRecipe(existing.createInfo, createInfo),
+				"Two different pipeline recipes have the same name: %s", name.c_str());
+		}
+		debug(LOG_3D, "Built pipeline %s for render pass class %s", name.c_str(), currentRenderPass().className.c_str());
+		createdPipelines.emplace_back(createInfo, std::move(name), renderPasses.size());
 		psoID = createdPipelines.size() - 1;
-		createdPipelines[psoID.value()].renderPassPSO[currentRenderPassId] = pipeline;
+		createdPipelines[psoID.value()].renderPassPSO[currentRenderPass().psoSlot] = pipeline;
 	}
 	else
 	{
 		auto& builtPipelineRegistry = createdPipelines[psoID.value()];
-		if (builtPipelineRegistry.renderPassPSO[currentRenderPassId] != nullptr)
+		const size_t psoSlot = currentRenderPass().psoSlot;
+		if (builtPipelineRegistry.renderPassPSO[psoSlot] != nullptr)
 		{
-			buffering_mechanism::get_current_resources().pso_to_delete.emplace_back(builtPipelineRegistry.renderPassPSO[currentRenderPassId]);
+			buffering_mechanism::get_current_resources().pso_to_delete.emplace_back(builtPipelineRegistry.renderPassPSO[psoSlot]);
 		}
-		builtPipelineRegistry.renderPassPSO[currentRenderPassId] = pipeline;
+		builtPipelineRegistry.renderPassPSO[psoSlot] = pipeline;
 	}
 
 	return new VkPSOId(psoID.value(), false); // always return a new indirect reference
@@ -3900,7 +4007,20 @@ void VkRoot::shutdown()
 {
 	_screenFrameOpen = false;
 	destroySwapchainAndSwapchainSpecificStuff(true);
-	// ShadowMap and other non-swapchain surfaces after swapchain/buffering teardown (GPU idle, FBs flushed).
+	_screenshotReadback.releaseStagingBuffers(vkDynLoader);
+	destroyDynamicRenderPasses();
+	flushDeferredFramebufferDeletes();
+	if (pDefaultTexture)
+	{
+		delete pDefaultTexture;
+		pDefaultTexture = nullptr;
+	}
+	if (pDefaultArrayTexture)
+	{
+		delete pDefaultArrayTexture;
+		pDefaultArrayTexture = nullptr;
+	}
+	// ShadowMap and other non-swapchain surfaces after swapchain teardown (GPU idle, FBs flushed).
 	resetAllPipelineSurfaceSlots();
 
 	destroyGpuTimingQueryPool();
@@ -3933,6 +4053,15 @@ void VkRoot::shutdown()
 		ASSERT(createdPipelines.empty(), "No device, but createdPipelines is not empty??");
 	}
 
+	// The frame slots hold VMA allocations and the deferred deletes, so they go before the allocator.
+	reportFrameResourcePeaks((validationLayer) ? LOG_INFO : LOG_3D);
+	buffering_mechanism::destroy(dev, vkDynLoader);
+	// Every pipeline is destroyed now, including the deferred ones.
+	if (dev)
+	{
+		sharedPipelineObjects.destroy(dev, vkDynLoader);
+	}
+
 	// destroy allocator
 	if (allocator != VK_NULL_HANDLE)
 	{
@@ -3943,6 +4072,8 @@ void VkRoot::shutdown()
 	// destroy logical device
 	if (dev)
 	{
+		// Everything the device made is destroyed by now, so an object that is still live was leaked.
+		gfx_api::vk::reportObjectCounters((validationLayer) ? LOG_INFO : LOG_3D);
 		dev.destroy(nullptr, vkDynLoader);
 		dev = vk::Device();
 	}
@@ -4095,23 +4226,18 @@ void VkRoot::destroySwapchainAndSwapchainSpecificStuff(bool doDestroySwapchain)
 	finalizeActiveRecording();
 	waitForAllIdle();
 	_screenshotReadback.shutdown(vkDynLoader);
-	destroyDynamicRenderPasses();
-	flushDeferredFramebufferDeletes();
 
-	if (pDefaultTexture)
-	{
-		delete pDefaultTexture;
-		pDefaultTexture = nullptr;
-	}
-	if (pDefaultArrayTexture)
-	{
-		delete pDefaultArrayTexture;
-		pDefaultArrayTexture = nullptr;
-	}
+	// Render passes, pipelines and the frame slots do not depend on the swapchain, so they stay
+	// (createSwapchain() drops the render passes if the surface format changes).
+	// Framebuffers can name swapchain image views, so all of them go.
+	bumpRenderGraphEpoch();
+	invalidateWarmEntries();
+	clearFramebufferCache();
+	flushDeferredFramebufferDeletes();
 
 	resetSwapchainPipelineSurfaceSlots();
 
-	buffering_mechanism::destroy(dev, vkDynLoader);
+	buffering_mechanism::destroySwapchainImages();
 
 	resetImageLayoutTracker();
 
@@ -4515,7 +4641,14 @@ void VkRoot::createSwapchain(bool allowHandleSurfaceLost)
 	}
 
 	// pick surface format
+	const vk::Format previousSurfaceFormat = surfaceFormat.format;
 	surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
+	if (surfaceFormat.format != previousSurfaceFormat && !renderPasses.empty())
+	{
+		// Render passes that write the swapchain, and their pipelines, name its format.
+		debug(LOG_3D, "Surface format changed: rebuilding render passes and pipelines");
+		destroyDynamicRenderPasses();
+	}
 	debug(LOG_3D, "Using surface format: %s - %s", to_string(surfaceFormat.format).c_str(), to_string(surfaceFormat.colorSpace).c_str());
 
 	// pick compositeAlpha
@@ -4610,7 +4743,18 @@ void VkRoot::createSwapchain(bool allowHandleSurfaceLost)
 	//
 
 	try {
-		buffering_mechanism::init(dev, allocator, swapchainImages.size(), queueFamilyIndices.graphicsFamily.value(), vkDynLoader);
+		if (!buffering_mechanism::isInitialized())
+		{
+			buffering_mechanism::initFrames(dev, allocator, std::min<size_t>(MAX_FRAMES_IN_FLIGHT, swapchainImages.size()), queueFamilyIndices.graphicsFamily.value(), vkDynLoader);
+		}
+		else
+		{
+			// destroySwapchainAndSwapchainSpecificStuff() waited for the device to be idle.
+			buffering_mechanism::resetFramesAfterIdle(dev, vkDynLoader);
+		}
+		buffering_mechanism::initSwapchainImages(dev, swapchainImages.size(), vkDynLoader);
+		// A framebuffer that writes one swapchain image is used once every swapchainImages.size() frames.
+		_framebufferCache.setMaxIdleFrames(swapchainImages.size());
 	}
 	catch (const vk::SystemError &e) {
 		auto resultErr = static_cast<vk::Result>(e.code().value());
@@ -4650,23 +4794,26 @@ void VkRoot::createSwapchain(bool allowHandleSurfaceLost)
 	}
 	currentSwapchainIndex = 0;
 
-	// create defaultTexture (2x2, all initialized to 0)
-	const size_t defaultTexture_width = 2;
-	const size_t defaultTexture_height = 2;
-	pDefaultTexture = new VkTexture(*this, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_texture>");
-	pDefaultArrayTexture = new VkTextureArray(*this, 1, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_array_texture>");
+	// create defaultTexture (2x2, all initialized to 0), once: it does not depend on the swapchain
+	if (pDefaultTexture == nullptr)
+	{
+		const size_t defaultTexture_width = 2;
+		const size_t defaultTexture_height = 2;
+		pDefaultTexture = new VkTexture(*this, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_texture>");
+		pDefaultArrayTexture = new VkTextureArray(*this, 1, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_array_texture>");
 
-	iV_Image defaultTexture;
-	defaultTexture.allocate(defaultTexture_width, defaultTexture_height, 4, true);
-	if (!pDefaultTexture->upload(0, defaultTexture))
-	{
-		debug(LOG_ERROR, "Failed to upload default texture??");
+		iV_Image defaultTexture;
+		defaultTexture.allocate(defaultTexture_width, defaultTexture_height, 4, true);
+		if (!pDefaultTexture->upload(0, defaultTexture))
+		{
+			debug(LOG_ERROR, "Failed to upload default texture??");
+		}
+		if (!pDefaultArrayTexture->upload_layer(0, 0, defaultTexture))
+		{
+			debug(LOG_ERROR, "Failed to upload default array texture??");
+		}
+		pDefaultArrayTexture->flush();
 	}
-	if (!pDefaultArrayTexture->upload_layer(0, 0, defaultTexture))
-	{
-		debug(LOG_ERROR, "Failed to upload default array texture??");
-	}
-	pDefaultArrayTexture->flush();
 
 	_screenFrameCoordinator.presentation().syncDrawableSize(w, h);
 }
@@ -5311,6 +5458,9 @@ bool VkRoot::createLogicalDevice()
 	// See: https://stackoverflow.com/a/35504844
 	vkDynLoader.init(static_cast<VkInstance>(inst), vkDynLoader.vkGetInstanceProcAddr, static_cast<VkDevice>(dev), vkDynLoader.vkGetDeviceProcAddr);
 
+	// Count the objects of each type (before createAllocator() copies the entry points into VMA).
+	gfx_api::vk::installObjectCounters(vkDynLoader);
+
 	return true;
 }
 
@@ -5598,6 +5748,9 @@ void VkRoot::setupSwapchainImages()
 		debug(LOG_FATAL, "vk::Queue::waitIdle: unhandled error: %s", e.what());
 		throw;
 	}
+
+	// The frame slot's pool outlives this swapchain, so give the buffer back.
+	dev.freeCommandBuffers(buffering_mechanism::perFrameResources[0]->pool, buffers, vkDynLoader);
 }
 
 gfx_api::pixel_format gfx_api::vkFormatToPixelFormat(::vk::Format format)
@@ -6062,13 +6215,14 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 	VkPSOId* newPSOId = static_cast<VkPSOId*>(pso);
 	// lookup PSO
 	auto& pipelineInfo = createdPipelines[newPSOId->psoID];
-	VkPSO* newPSO = pipelineInfo.renderPassPSO[currentRenderPassId];
+	auto& renderPass = renderPasses[currentRenderPassId];
+	VkPSO* newPSO = pipelineInfo.renderPassPSO[renderPass.psoSlot];
 	if (!newPSO)
 	{
-		// Must build this pipeline for a different render pass
-		auto& renderPass = renderPasses[currentRenderPassId];
+		// Must build this pipeline for a render pass that is not compatible with any it was built for
+		debug(LOG_3D, "Built pipeline %s for render pass class %s", pipelineInfo.name.c_str(), renderPass.className.c_str());
 		newPSO = new VkPSO(dev, physDeviceProps.limits, pipelineInfo.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
-		pipelineInfo.renderPassPSO[currentRenderPassId] = newPSO;
+		pipelineInfo.renderPassPSO[renderPass.psoSlot] = newPSO;
 	}
 	if (currentPSO != newPSO)
 	{
@@ -6716,7 +6870,7 @@ void perFrameResources_t::ensureTransferRecordingBegun(const WZ_vk::DispatchLoad
 			handleUnrecoverableError(vk::Result::eTimeout);
 		}
 		dev.resetFences(fences, vkDynLoader);
-		cmdCopy.reset(vk::CommandBufferResetFlagBits::eReleaseResources, vkDynLoader);
+		dev.resetCommandPool(copyPool, vk::CommandPoolResetFlags(), vkDynLoader);
 		copyCmdBufferSubmittedSincePoolReset = false;
 	}
 
@@ -6926,8 +7080,41 @@ void VkRoot::beginScreenFrame()
 	}
 }
 
+// Debug aids that exercise the swapchain recreate paths without a window resize:
+//   WZ_VULKAN_DEBUG_FORCE_SWAPCHAIN_RECREATE=<N>  recreate the swapchain every N screen frames
+//   WZ_VULKAN_DEBUG_FORCE_SURFACE_LOST=<N>        recreate the surface and swapchain every N screen frames
+static uint64_t debugFrameIntervalFromEnv(const char* name)
+{
+	const char* value = getenv(name);
+	if (value == nullptr)
+	{
+		return 0;
+	}
+	const unsigned long long interval = strtoull(value, nullptr, 10);
+	if (interval > 0)
+	{
+		debug(LOG_INFO, "%s=%llu", name, interval);
+	}
+	return static_cast<uint64_t>(interval);
+}
+
 void VkRoot::reconcileSwapchainAtFrameOpen()
 {
+	static const uint64_t forceRecreateInterval = debugFrameIntervalFromEnv("WZ_VULKAN_DEBUG_FORCE_SWAPCHAIN_RECREATE");
+	static const uint64_t forceSurfaceLostInterval = debugFrameIntervalFromEnv("WZ_VULKAN_DEBUG_FORCE_SURFACE_LOST");
+	static uint64_t screenFrameCount = 0;
+	++screenFrameCount;
+	if (forceSurfaceLostInterval > 0 && (screenFrameCount % forceSurfaceLostInterval) == 0)
+	{
+		debug(LOG_3D, "Forcing surface lost recovery at screen frame %" PRIu64, screenFrameCount);
+		_screenFrameCoordinator.requestSurfaceLostRecovery();
+	}
+	else if (forceRecreateInterval > 0 && (screenFrameCount % forceRecreateInterval) == 0)
+	{
+		debug(LOG_3D, "Forcing swapchain recreate at screen frame %" PRIu64, screenFrameCount);
+		_screenFrameCoordinator.requestSwapchainRecreate();
+	}
+
 	_screenFrameCoordinator.reconcileSwapchainAtFrameOpen();
 }
 
@@ -6943,6 +7130,32 @@ bool VkRoot::canRecordSwapchainDraws() const
 
 void VkRoot::finishScreenFrame()
 {
+	// Debug aid: WZ_VULKAN_DEBUG_SCREENSHOT=<frame>:<file.png> saves that frame as a PNG
+	// (the file name is relative to the write directory, --configdir).
+	static const std::pair<size_t, std::string> debugScreenshot = []() -> std::pair<size_t, std::string> {
+		const char* value = getenv("WZ_VULKAN_DEBUG_SCREENSHOT");
+		const char* separator = (value) ? strchr(value, ':') : nullptr;
+		if (separator == nullptr)
+		{
+			return {0, std::string()};
+		}
+		const size_t frame = static_cast<size_t>(strtoul(value, nullptr, 10));
+		debug(LOG_INFO, "Vulkan debug screenshot: frame %zu -> %s", frame, separator + 1);
+		return {frame, std::string(separator + 1)};
+	}();
+	if (!debugScreenshot.second.empty() && debugScreenshot.first == frameNum)
+	{
+		const std::string path = debugScreenshot.second;
+		const bool requested = getScreenshot([path](std::unique_ptr<iV_Image> image) {
+			const bool saved = image && iV_saveImage_PNG(path.c_str(), image.get()).noError();
+			debug(LOG_INFO, "Vulkan debug screenshot %s: %s", saved ? "saved" : "FAILED", path.c_str());
+		});
+		if (!requested)
+		{
+			debug(LOG_INFO, "Vulkan debug screenshot: no capture at frame %zu", frameNum);
+		}
+	}
+
 	_screenFrameCoordinator.finishFrame();
 }
 
@@ -7717,8 +7930,38 @@ bool VkRoot::setShadowConstants(gfx_api::lighting_constants newValues)
 	return true;
 }
 
+// The per-frame peaks of the frame slots: what fixed-size per-frame resources need (Vulkan SC cannot grow them).
+void VkRoot::reportFrameResourcePeaks(code_part part) const
+{
+	uint64_t staging = 0, streamedVertex = 0, uniform = 0, lightData = 0;
+	size_t imageSamplerSets = 0, imageSamplerDescriptors = 0, uniformSets = 0, uniformDescriptors = 0;
+	size_t imageSamplerPools = 0, uniformPools = 0;
+	for (const auto& frameResources : buffering_mechanism::perFrameResources)
+	{
+		staging = std::max(staging, frameResources->stagingBufferAllocator.peakUsedPerFrame());
+		streamedVertex = std::max(streamedVertex, frameResources->streamedVertexBufferAllocator.peakUsedPerFrame());
+		uniform = std::max(uniform, frameResources->uniformBufferAllocator.peakUsedPerFrame());
+		lightData = std::max(lightData, frameResources->lightDataBufferAllocator.peakUsedPerFrame());
+		const auto& imageSampler = frameResources->combinedImageSamplerDescriptorPools;
+		const auto& uniformDynamic = frameResources->uniformDynamicDescriptorPools;
+		imageSamplerSets = std::max(imageSamplerSets, imageSampler.peakSetsPerFrame);
+		imageSamplerDescriptors = std::max(imageSamplerDescriptors, imageSampler.peakDescriptorsPerFrame);
+		imageSamplerPools = std::max(imageSamplerPools, imageSampler.pools.size());
+		uniformSets = std::max(uniformSets, uniformDynamic.peakSetsPerFrame);
+		uniformDescriptors = std::max(uniformDescriptors, uniformDynamic.peakDescriptorsPerFrame);
+		uniformPools = std::max(uniformPools, uniformDynamic.pools.size());
+	}
+	debug(part, "Per-frame peaks of %zu frame slots:", buffering_mechanism::perFrameResources.size());
+	debug(part, "  ring bytes: staging %" PRIu64 ", streamed vertex %" PRIu64 ", uniform %" PRIu64 ", light data %" PRIu64,
+		staging, streamedVertex, uniform, lightData);
+	debug(part, "  combined image sampler: %zu sets, %zu descriptors, %zu pools; uniform buffer dynamic: %zu sets, %zu descriptors, %zu pools",
+		imageSamplerSets, imageSamplerDescriptors, imageSamplerPools, uniformSets, uniformDescriptors, uniformPools);
+}
+
 bool VkRoot::debugRecompileAllPipelines()
 {
+	// Read the shaders again: the new pipelines get new shader modules.
+	sharedPipelineObjects.releaseShaderModules(dev, vkDynLoader);
 	for (auto& pipelineInfo : createdPipelines)
 	{
 		const size_t numRenderPasses = std::min(pipelineInfo.renderPassPSO.size(), renderPasses.size());

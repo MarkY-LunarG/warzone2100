@@ -140,11 +140,21 @@ bool ScreenshotStagingBuffer::create(::vk::Device device,
 	uint32_t bytesPerPixel, ::vk::DeviceSize bufferImageGranularity,
 	const WZ_vk::DispatchLoaderDynamic& loader)
 {
-	destroy(loader);
-
 	const ::vk::DeviceSize tightRowBytes = static_cast<::vk::DeviceSize>(width) * bytesPerPixel;
-	rowPitch = ((tightRowBytes + bufferImageGranularity - 1) / bufferImageGranularity) * bufferImageGranularity;
-	size = rowPitch * height;
+	const ::vk::DeviceSize newRowPitch = ((tightRowBytes + bufferImageGranularity - 1) / bufferImageGranularity) * bufferImageGranularity;
+	const ::vk::DeviceSize newSize = newRowPitch * height;
+	if (dev == device && buffer && newSize <= capacity)
+	{
+		// Reuse the existing buffer and its memory.
+		rowPitch = newRowPitch;
+		size = newSize;
+		return true;
+	}
+
+	destroy(loader);
+	rowPitch = newRowPitch;
+	size = newSize;
+	capacity = newSize;
 
 	const ::vk::BufferCreateInfo bufferInfo({}, size, ::vk::BufferUsageFlagBits::eTransferDst,
 		::vk::SharingMode::eExclusive);
@@ -172,6 +182,7 @@ void ScreenshotStagingBuffer::destroy(const WZ_vk::DispatchLoaderDynamic& loader
 		buffer = ::vk::Buffer{};
 		memory = ::vk::DeviceMemory{};
 		size = 0;
+		capacity = 0;
 		rowPitch = 0;
 		return;
 	}
@@ -189,6 +200,7 @@ void ScreenshotStagingBuffer::destroy(const WZ_vk::DispatchLoaderDynamic& loader
 	buffer = ::vk::Buffer{};
 	memory = ::vk::DeviceMemory{};
 	size = 0;
+	capacity = 0;
 	rowPitch = 0;
 }
 
@@ -232,7 +244,12 @@ size_t ScreenshotReadback::totalPendingCount() const
 void ScreenshotReadback::destroyCaptureResources(PendingCapture& capture,
 	const WZ_vk::DispatchLoaderDynamic& loader)
 {
-	capture.staging.destroy(loader);
+	// Keep the staging buffer for the next capture (see releaseStagingBuffers()).
+	if (capture.staging.buffer)
+	{
+		_freeStaging.push_back(capture.staging);
+	}
+	capture.staging = ScreenshotStagingBuffer{};
 	capture.callback = {};
 	capture.gpuRecorded = false;
 	capture.gpuSubmitted = false;
@@ -274,6 +291,11 @@ bool ScreenshotReadback::requestCapture(std::function<void(std::unique_ptr<iV_Im
 	capture.swapchainImageIndex = swapchainImageIndex;
 	capture.ringSlot = ringSlot;
 	capture.callback = std::move(callback);
+	if (!_freeStaging.empty())
+	{
+		capture.staging = _freeStaging.back();
+		_freeStaging.pop_back();
+	}
 
 	if (!capture.staging.create(dev, memprops, extent.width, extent.height, 4, bufferImageGranularity, loader))
 	{
@@ -478,6 +500,16 @@ void ScreenshotReadback::cancelAll(const WZ_vk::DispatchLoaderDynamic& loader)
 void ScreenshotReadback::shutdown(const WZ_vk::DispatchLoaderDynamic& loader)
 {
 	cancelAll(loader);
+}
+
+void ScreenshotReadback::releaseStagingBuffers(const WZ_vk::DispatchLoaderDynamic& loader)
+{
+	cancelAll(loader);
+	for (auto& staging : _freeStaging)
+	{
+		staging.destroy(loader);
+	}
+	_freeStaging.clear();
 }
 
 } // namespace gfx_api::vk

@@ -48,13 +48,15 @@ struct abstract_texture;
 namespace vk
 {
 
-/// Host-visible staging buffer for one capture; freed on completion/cancel/shutdown.
+/// Host-visible staging buffer for one capture. ScreenshotReadback reuses it for later captures,
+/// so device memory is allocated again only for a larger capture, and freed only at device shutdown.
 struct ScreenshotStagingBuffer
 {
 	::vk::Device dev{};
 	::vk::Buffer buffer{};
 	::vk::DeviceMemory memory{};
 	::vk::DeviceSize size = 0;
+	::vk::DeviceSize capacity = 0;
 	::vk::DeviceSize rowPitch = 0;
 
 	bool create(::vk::Device device, const ::vk::PhysicalDeviceMemoryProperties& memprops,
@@ -101,18 +103,22 @@ public:
 	void cancelAwaitingRecord(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void cancelPendingSubmit(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void cancelAll(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	/// Cancels every capture (the swapchain is going away). The staging buffers are kept.
 	void shutdown(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	/// Frees the staging buffers. Call before the device is destroyed.
+	void releaseStagingBuffers(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 
 private:
 	std::optional<PendingCapture> _awaitingRecord;
 	std::optional<PendingCapture> _pendingThisSubmit;
 	std::deque<PendingCapture> _submitted;
+	std::vector<ScreenshotStagingBuffer> _freeStaging;
 
 	size_t totalPendingCount() const;
 	static bool isSupportedSwapchainFormat(::vk::Format format);
 	static bool buildCpuImage(const PendingCapture& capture, const uint8_t* mappedStaging,
 		std::unique_ptr<iV_Image>& outImage);
-	static void destroyCaptureResources(PendingCapture& capture, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	void destroyCaptureResources(PendingCapture& capture, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 };
 
 } // namespace gfx_api::vk
