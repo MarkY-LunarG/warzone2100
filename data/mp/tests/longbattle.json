@@ -1,0 +1,29 @@
+{
+	"challenge": {
+		"bases": 2,
+		"difficulty": "Medium",
+		"map": "Sk-Rush",
+		"maxPlayers": 4,
+		"powerLevel": 1,
+		"scavengers": "false",
+		"version": 2
+	},
+	"player_0": {
+		"spectator": true
+	},
+	"player_1": {
+		"difficulty": "Medium",
+		"team": 1,
+		"ai": "multiplay/skirmish/nexus.js"
+	},
+	"player_2": {
+		"difficulty": "Medium",
+		"team": 2,
+		"ai": "multiplay/skirmish/Cobra.js"
+	},
+	"player_3": {
+		"difficulty": "Medium",
+		"team": 3,
+		"ai": "multiplay/skirmish/semperfi.js"
+	}
+}
