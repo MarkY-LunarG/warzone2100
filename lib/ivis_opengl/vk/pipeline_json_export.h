@@ -34,6 +34,8 @@
 #if defined(WZ_VULKAN_ENABLED)
 
 #include "vk/vulkan_hpp_include.h"
+#include "vk/pass_layout_key.h"
+#include "gfx_api.h"
 
 #include <cstdint>
 #include <map>
@@ -72,6 +74,11 @@ public:
 	void recordGraphicsPipeline(const std::string& name, const std::string& recipe, const std::string& renderPassClass,
 		const std::string& specialization, const VkGraphicsPipelineCreateInfo& createInfo, const std::vector<std::string>& shaderFiles);
 
+	// For the Vulkan SC build, which creates every pipeline at startup (vk/pipeline_manifest.h): the
+	// recipe of each pipeline, and the layout of the first render pass of each compatibility class.
+	void recordRecipe(const std::string& recipe, const gfx_api::pipeline_create_info& createInfo);
+	void recordRenderPassClass(const std::string& renderPassClass, const PassLayoutKey& layout);
+
 	// Writes the documents and the manifest. Returns false on failure.
 	bool write();
 
@@ -91,6 +98,8 @@ private:
 	std::string _directory;
 	std::unique_ptr<vks::PipelineExporter> _exporter;
 	std::map<std::string, ManifestEntry> _manifest;
+	std::map<std::string, std::string> _recipes;          // name: the recipe as JSON text
+	std::map<std::string, std::string> _renderPassClasses; // name: the layout as JSON text
 	size_t _documentsToWrite = 0;
 };
 

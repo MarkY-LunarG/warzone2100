@@ -401,6 +401,7 @@ size_t RenderPassLayoutCache::getOrCreate(const PassLayoutKey& key)
 	if (_root.pipelineJsonExport)
 	{
 		_root.pipelineJsonExport->recordRenderPass(static_cast<const VkRenderPassCreateInfo&>(createInfo), static_cast<VkRenderPass>(renderPassDetails.rp));
+		_root.pipelineJsonExport->recordRenderPassClass(renderPassDetails.className, key);
 	}
 	for (size_t otherId = 0; otherId < renderPassId; ++otherId)
 	{
