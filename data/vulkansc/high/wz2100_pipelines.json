@@ -90,6 +90,17 @@
             ],
             "specialization": "-"
         },
+        "Rect instanced program/b2.d3.m255.o0.s2.c0.p3/e62072dc/44x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.4087be32903122d467d2f2c66d57a5f3.json",
+            "identifier": "4087be32903122d467d2f2c66d57a5f3",
+            "recipe": "Rect instanced program/b2.d3.m255.o0.s2.c0.p3/e62072dc",
+            "renderPassClass": "44x1.130x1/a846c127",
+            "shaderFiles": [
+                "rect_instanced.vert.spv",
+                "rect_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
         "Rect program/b0.d3.m255.o0.s2.c0.p3/840e0166/44x1.130x1/a846c127/-": {
             "document": "wz2100.pc.97372a73b103b15267ba1bc691eff55d.json",
             "identifier": "97372a73b103b15267ba1bc691eff55d",

@@ -247,6 +247,22 @@ const void* pipelineCreateInfoChain(PipelineChainStorage& storage, const uint8_t
 	return offlineInfo;
 }
 
+uint64_t commandBufferMemoryConsumption(void* device, void* getCommandPoolMemoryConsumption, uint64_t commandPool, void* commandBuffer)
+{
+	auto pfnGetConsumption = reinterpret_cast<PFN_vkGetCommandPoolMemoryConsumption>(getCommandPoolMemoryConsumption);
+	if (device == nullptr || pfnGetConsumption == nullptr || commandBuffer == nullptr)
+	{
+		return 0;
+	}
+	VkCommandPool pool = VK_NULL_HANDLE;
+	static_assert(sizeof(pool) <= sizeof(commandPool), "VkCommandPool does not fit in 64 bits");
+	memcpy(&pool, &commandPool, sizeof(pool));
+	VkCommandPoolMemoryConsumption consumption = {};
+	consumption.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_MEMORY_CONSUMPTION;
+	pfnGetConsumption(static_cast<VkDevice>(device), pool, static_cast<VkCommandBuffer>(commandBuffer), &consumption);
+	return consumption.commandBufferAllocated;
+}
+
 bool getProperties(void* physicalDevice, void* getPhysicalDeviceProperties2, Properties& out)
 {
 	auto pfnGetProperties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(getPhysicalDeviceProperties2);

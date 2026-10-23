@@ -135,6 +135,11 @@ uint64_t createPipelineCache(void* device, void* createPipelineCache, const void
 // Returns a VkPipelineOfflineCreateInfo -> next, which names the pipeline in the pipeline cache.
 const void* pipelineCreateInfoChain(PipelineChainStorage& storage, const uint8_t identifier[16], uint64_t poolEntrySize, const void* next);
 
+// The memory a command buffer uses (VkCommandPoolMemoryConsumption::commandBufferAllocated), or 0 if it
+// cannot be read. getCommandPoolMemoryConsumption is a PFN_vkGetCommandPoolMemoryConsumption; commandPool
+// is the VkCommandPool handle's value.
+uint64_t commandBufferMemoryConsumption(void* device, void* getCommandPoolMemoryConsumption, uint64_t commandPool, void* commandBuffer);
+
 // Reads VkPhysicalDeviceVulkanSC10Properties. getPhysicalDeviceProperties2 is a PFN_vkGetPhysicalDeviceProperties2.
 bool getProperties(void* physicalDevice, void* getPhysicalDeviceProperties2, Properties& out);
 
