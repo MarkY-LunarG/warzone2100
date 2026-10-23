@@ -39,6 +39,7 @@
 #include "vk/render_pass_layout_cache.h"
 #include "vk/screen_frame_coordinator.h"
 #include "vk/screenshot_readback.h"
+#include "vk/pipeline_json_export.h"
 #include "vk/shared_pipeline_objects.h"
 #include "vk/warm_entry.h"
 #include <algorithm>
@@ -819,6 +820,10 @@ struct VkRoot final : gfx_api::context
 
 	// Layouts, samplers, and shader modules of all pipelines. Mutable because VkPSO holds a const VkRoot.
 	mutable gfx_api::vk::SharedPipelineObjects sharedPipelineObjects;
+	// Set by WZ_VULKAN_EXPORT_PIPELINES: records every pipeline for the Vulkan SC pipeline JSON.
+	std::unique_ptr<gfx_api::vk::PipelineJsonExport> pipelineJsonExport;
+	// The compatibility class name of a render pass (RenderPassDetails::className).
+	const std::string& renderPassClassNameFor(vk::RenderPass renderPass) const;
 
 	// default textures
 	VkTexture* pDefaultTexture = nullptr;

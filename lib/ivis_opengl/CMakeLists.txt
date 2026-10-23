@@ -39,6 +39,7 @@ file(GLOB HEADERS
 	"vk/layout_sync.h"
 	"vk/layout_translation.h"
 	"vk/object_counters.h"
+	"vk/pipeline_json_export.h"
 	"vk/pipeline_names.h"
 	"vk/pass_layout_key.h"
 	"vk/pre_pass_barrier_emitter.h"
@@ -215,6 +216,8 @@ if(WZ_ENABLE_BACKEND_VULKAN)
 			"vk/layout_sync.cpp"
 			"vk/layout_translation.cpp"
 			"vk/object_counters.cpp"
+			"vk/pipeline_json_export.cpp"
+			"3rdparty/vulkansc_samples/VulkanSCPipelineExport.cpp"
 			"vk/pipeline_names.cpp"
 			"vk/pass_layout_key.cpp"
 			"vk/pre_pass_barrier_emitter.cpp"
@@ -228,6 +231,12 @@ if(WZ_ENABLE_BACKEND_VULKAN)
 		CHECK_CXX_COMPILER_FLAG(-Wno-pedantic COMPILER_SUPPORTS_WNO_PEDANTIC)
 		if(COMPILER_SUPPORTS_WNO_PEDANTIC)
 			set_source_files_properties("3rdparty/vk_mem_alloc.cpp" PROPERTIES COMPILE_FLAGS -Wno-pedantic)
+		endif()
+		# The pipeline exporter switches on VkStructureType with the Vulkan SC-only sType, which the
+		# desktop header's enum does not have (see 3rdparty/vulkansc_samples/README.md)
+		CHECK_CXX_COMPILER_FLAG(-Wno-switch COMPILER_SUPPORTS_WNO_SWITCH)
+		if(COMPILER_SUPPORTS_WNO_SWITCH)
+			set_source_files_properties("3rdparty/vulkansc_samples/VulkanSCPipelineExport.cpp" PROPERTIES COMPILE_OPTIONS -Wno-switch)
 		endif()
 
 		# Do *NOT* link to the Vulkan library - should be loaded dynamically
@@ -322,6 +331,8 @@ if (CMAKE_CXX_STANDARD GREATER_EQUAL 20)
 		"vk/layout_sync.cpp"
 		"vk/layout_translation.cpp"
 		"vk/object_counters.cpp"
+		"vk/pipeline_json_export.cpp"
+		"3rdparty/vulkansc_samples/VulkanSCPipelineExport.cpp"
 		"vk/pipeline_names.cpp"
 		"vk/pass_layout_key.cpp"
 		"vk/pre_pass_barrier_emitter.cpp"

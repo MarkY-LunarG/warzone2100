@@ -398,6 +398,10 @@ size_t RenderPassLayoutCache::getOrCreate(const PassLayoutKey& key)
 	renderPassDetails.msaaSamples = hasMsaaResolve ? _root.msaaSamples : ::vk::SampleCountFlagBits::e1;
 	renderPassDetails.psoSlot = renderPassId;
 	renderPassDetails.className = renderPassClassName(createInfo);
+	if (_root.pipelineJsonExport)
+	{
+		_root.pipelineJsonExport->recordRenderPass(static_cast<const VkRenderPassCreateInfo&>(createInfo), static_cast<VkRenderPass>(renderPassDetails.rp));
+	}
 	for (size_t otherId = 0; otherId < renderPassId; ++otherId)
 	{
 		const auto& other = _root.renderPasses[otherId];

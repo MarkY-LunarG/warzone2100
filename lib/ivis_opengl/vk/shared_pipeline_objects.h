@@ -41,9 +41,14 @@
 namespace gfx_api::vk
 {
 
+class PipelineJsonExport;
+
 class SharedPipelineObjects
 {
 public:
+	// Layouts created while this is set are recorded for the Vulkan SC pipeline JSON.
+	void setPipelineJsonExport(PipelineJsonExport* pipelineJsonExport) { _pipelineJsonExport = pipelineJsonExport; }
+
 	// The key names what the sampler create info is made from; the create info is used only on the first request.
 	::vk::Sampler sampler(::vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader,
 		const std::vector<uint64_t>& key, const ::vk::SamplerCreateInfo& createInfo);
@@ -71,6 +76,7 @@ private:
 	std::map<std::vector<uint64_t>, ::vk::DescriptorSetLayout> _descriptorSetLayouts;
 	std::map<std::vector<uint64_t>, ::vk::PipelineLayout> _pipelineLayouts;
 	std::map<std::string, ::vk::ShaderModule> _shaderModules;
+	PipelineJsonExport* _pipelineJsonExport = nullptr;
 };
 
 } // namespace gfx_api::vk
