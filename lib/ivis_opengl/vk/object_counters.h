@@ -46,6 +46,9 @@ void installObjectCounters(WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 // Writes the peak, total, and live count of each object type to the log.
 // Call it before the device is destroyed: objects that are still live then were not destroyed.
 void reportObjectCounters(code_part part);
+// The end of startup: the report also counts what is created after it. Vulkan SC has no vkFreeMemory, so
+// device memory allocated after startup is never given back.
+void markObjectCountersStartupComplete();
 
 } // namespace gfx_api::vk
 

@@ -275,41 +275,6 @@ std::vector<VKType> GetVectorFromVKFunc(F &&func, Args &&... args)
 	return GetVectorFromVKFuncWithExplicitInit(func, VKType(), args...);
 }
 
-static uint32_t findProperties(const vk::PhysicalDeviceMemoryProperties& memprops, const uint32_t& memoryTypeBits, const vk::MemoryPropertyFlagBits& properties, bool *memTypeFound = nullptr)
-{
-	for (uint32_t i = 0; i < memprops.memoryTypeCount; ++i)
-	{
-		if ((memoryTypeBits & (1 << i)) &&
-			((memprops.memoryTypes[i].propertyFlags & properties) == properties))
-		{
-			// Sanity checks: check that the heap exists and has a size > 0
-			auto currHeapIndex = memprops.memoryTypes[i].heapIndex;
-			if (currHeapIndex >= memprops.memoryHeapCount)
-			{
-				continue;
-			}
-			if (memprops.memoryHeaps[currHeapIndex].size == 0)
-			{
-				// A memoryHeap with size 0 is obviously useless
-				// Don't know why this would be advertised (but the "OpenCL, OpenGL, and Vulkan Compatibility Pack" has been detected doing this in certain cases, so best to check and ignore)
-				debug(LOG_INFO, "Ignoring memoryType[%" PRIu32 "] pointing to memoryHeap[%" PRIu32 "] with size 0", i, currHeapIndex);
-				continue;
-			}
-
-			if (memTypeFound)
-			{
-				*memTypeFound = true;
-			}
-			return i;
-		}
-	}
-	if (memTypeFound)
-	{
-		*memTypeFound = false;
-	}
-	return -1;
-}
-
 [[noreturn]] void handleUnrecoverableError(vk::Result reason)
 {
 	debug(LOG_ERROR, "Vulkan backend encountered error: %s", vk::to_string(reason).c_str());
@@ -3316,10 +3281,12 @@ void VkRoot::rebuildPipelinesIfNecessary()
 }
 
 // throws a vk::SystemError on an unrecoverable error (like OOM)
-static void createGPUImageAndViewInternal(const vk::PhysicalDevice& physicalDevice, const vk::PhysicalDeviceMemoryProperties& memprops, const vk::Device& dev,
+// The memory comes from VMA (in the Vulkan SC build, from the fixed image pool: selectMemoryPool()), so
+// that an attachment made again when the render settings change allocates no new device memory.
+static void createGPUImageAndViewInternal(VmaAllocator allocator, const vk::Device& dev,
 									const vk::Extent2D& extent, vk::SampleCountFlagBits msaaSamples, vk::Format imageFormat,
 									const vk::ImageUsageFlags imageUsageFlags, const vk::ImageAspectFlags& subresourceAspectFlags,
-									vk::Image& outputImage, vk::DeviceMemory& outputMemory, vk::ImageView& outputView,
+									vk::Image& outputImage, VmaAllocation& outputAllocation, vk::ImageView& outputView,
 									const WZ_vk::DispatchLoaderDynamic& vkDynLoader, const char *loggingKey)
 {
 	if (loggingKey == nullptr)
@@ -3327,59 +3294,40 @@ static void createGPUImageAndViewInternal(const vk::PhysicalDevice& physicalDevi
 		loggingKey = "n/a";
 	}
 
-	try {
-		outputImage = dev.createImage(
-			vk::ImageCreateInfo()
-			.setFormat(imageFormat)
-			.setArrayLayers(1)
-			.setExtent(vk::Extent3D(extent.width, extent.height, 1))
-			.setImageType(vk::ImageType::e2D)
-			.setMipLevels(1)
-			.setSamples(msaaSamples)
-			.setTiling(vk::ImageTiling::eOptimal)
-			.setUsage(imageUsageFlags)
-			.setSharingMode(vk::SharingMode::eExclusive)
-			, nullptr, vkDynLoader);
-	}
-	catch (const vk::OutOfHostMemoryError& e) {
-		debug(LOG_ERROR, "vkCreateImage (%s): OutOfHostMemoryError: %s", loggingKey, e.what());
-		throw;
-	}
-	catch (const vk::OutOfDeviceMemoryError& e) {
-		debug(LOG_ERROR, "vkCreateImage (%s): OutOfDeviceMemoryError: %s", loggingKey, e.what());
-		throw;
-	}
+	const auto imageCreateInfo = vk::ImageCreateInfo()
+		.setFormat(imageFormat)
+		.setArrayLayers(1)
+		.setExtent(vk::Extent3D(extent.width, extent.height, 1))
+		.setImageType(vk::ImageType::e2D)
+		.setMipLevels(1)
+		.setSamples(msaaSamples)
+		.setTiling(vk::ImageTiling::eOptimal)
+		.setUsage(imageUsageFlags)
+		.setSharingMode(vk::SharingMode::eExclusive);
 
-	const auto memreq = dev.getImageMemoryRequirements(outputImage, vkDynLoader);
-	ASSERT(memreq.size > 0, "Attempting to allocate memory of size 0 will fail");
-
-	bool foundMemTypeIndex = false;
-	uint32_t memoryTypeIndex = findProperties(memprops, memreq.memoryTypeBits, vk::MemoryPropertyFlagBits::eLazilyAllocated, &foundMemTypeIndex);
-	if (!foundMemTypeIndex || !(imageUsageFlags & vk::ImageUsageFlagBits::eTransientAttachment))
+	VmaAllocationCreateInfo allocInfo = {};
+	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
+	VkResult result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+#if !defined(WZ_VULKANSC)
+	if (imageUsageFlags & vk::ImageUsageFlagBits::eTransientAttachment)
 	{
-		memoryTypeIndex = findProperties(memprops, memreq.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal, &foundMemTypeIndex);
+		// Lazily allocated memory where the device has it (tile-based GPUs); otherwise device local
+		VmaAllocationCreateInfo lazyAllocInfo = {};
+		lazyAllocInfo.usage = VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED;
+		result = vmaCreateImage(allocator, reinterpret_cast<const VkImageCreateInfo*>(&imageCreateInfo), &lazyAllocInfo,
+			reinterpret_cast<VkImage*>(&outputImage), &outputAllocation, nullptr);
 	}
-	if (!foundMemTypeIndex)
+#endif
+	if (result != VK_SUCCESS)
 	{
-		debug(LOG_ERROR, "Unable to find memory type index that matches: (memoryTypeBits: %" PRIu32 ")", memreq.memoryTypeBits);
-		WZ_THROW_VK_RESULT_EXCEPTION(vk::Result::eErrorOutOfDeviceMemory, "Unable to find memory type index that matches");
+		result = vmaCreateImage(allocator, reinterpret_cast<const VkImageCreateInfo*>(&imageCreateInfo), &allocInfo,
+			reinterpret_cast<VkImage*>(&outputImage), &outputAllocation, nullptr);
 	}
-
-	try {
-		outputMemory = dev.allocateMemory(
-			vk::MemoryAllocateInfo()
-				.setAllocationSize(memreq.size)
-				.setMemoryTypeIndex(memoryTypeIndex)
-			, nullptr, vkDynLoader);
-		dev.bindImageMemory(outputImage, outputMemory, 0, vkDynLoader);
-	}
-	catch (const vk::OutOfHostMemoryError& e) {
-		debug(LOG_ERROR, "vkAllocateMemory / vkBindImageMemory (%s): OutOfHostMemoryError: %s", loggingKey, e.what());
-		throw;
-	}
-	catch (const vk::OutOfDeviceMemoryError& e) {
-		debug(LOG_ERROR, "vkAllocateMemory / vkBindImageMemory (%s): OutOfDeviceMemoryError: %s", loggingKey, e.what());
-		throw;
+	if (result != VK_SUCCESS)
+	{
+		debug(LOG_ERROR, "vmaCreateImage (%s): %s", loggingKey, vk::to_string(static_cast<vk::Result>(result)).c_str());
+		WZ_THROW_VK_RESULT_EXCEPTION(static_cast<vk::Result>(result), "vmaCreateImage");
 	}
 
 	try {
@@ -3403,12 +3351,12 @@ static void createGPUImageAndViewInternal(const vk::PhysicalDevice& physicalDevi
 }
 
 // throws a vk::SystemError on an unrecoverable error (like OOM)
-static void createColorAttachmentImage(const vk::PhysicalDevice& physicalDevice, const vk::PhysicalDeviceMemoryProperties& memprops, const vk::Device& dev,
+static void createColorAttachmentImage(VmaAllocator allocator, const vk::Device& dev,
 									const vk::Extent2D& swapchainSize, vk::SampleCountFlagBits msaaSamples, vk::Format colorFormat,
-									vk::Image& colorImage, vk::DeviceMemory& colorImageMemory, vk::ImageView& colorImageView,
+									vk::Image& colorImage, VmaAllocation& colorImageMemory, vk::ImageView& colorImageView,
 									const WZ_vk::DispatchLoaderDynamic& vkDynLoader, const char *loggingKey = "colorImage")
 {
-	createGPUImageAndViewInternal(physicalDevice, memprops, dev,
+	createGPUImageAndViewInternal(allocator, dev,
 										 swapchainSize, msaaSamples, colorFormat,
 										 vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
 										 vk::ImageAspectFlagBits::eColor,
@@ -3417,9 +3365,9 @@ static void createColorAttachmentImage(const vk::PhysicalDevice& physicalDevice,
 }
 
 // throws a vk::SystemError on an unrecoverable error (like OOM)
-static void createDepthStencilImage(const vk::PhysicalDevice& physicalDevice, const vk::PhysicalDeviceMemoryProperties& memprops, const vk::Device& dev,
+static void createDepthStencilImage(VmaAllocator allocator, const vk::Device& dev,
 									const vk::Extent2D& swapchainSize, vk::SampleCountFlagBits msaaSamples, vk::Format depthFormat,
-									vk::Image& depthStencilImage, vk::DeviceMemory& depthStencilMemory, vk::ImageView& depthStencilView,
+									vk::Image& depthStencilImage, VmaAllocation& depthStencilMemory, vk::ImageView& depthStencilView,
 									const WZ_vk::DispatchLoaderDynamic& vkDynLoader, const char *loggingKey = "depthStencilImage",
 									bool enableShaderSampling = false)
 {
@@ -3429,7 +3377,7 @@ static void createDepthStencilImage(const vk::PhysicalDevice& physicalDevice, co
 		usage |= vk::ImageUsageFlagBits::eSampled;
 	}
 
-	createGPUImageAndViewInternal(physicalDevice, memprops, dev,
+	createGPUImageAndViewInternal(allocator, dev,
 										 swapchainSize, msaaSamples, depthFormat,
 										 // FUTURE TODO: Add vk::ImageUsageFlagBits::eTransientAttachment once we get rid of stencil shadows entirely
 										 usage,
@@ -3478,10 +3426,10 @@ void destroySurfaceGpuImage(VkRoot& root, VkSurfaceGpu& gpu)
 			frameResources.image_to_delete.emplace_back(gpu.image);
 			gpu.image = vk::Image();
 		}
-		if (gpu.memory)
+		if (gpu.allocation != VK_NULL_HANDLE)
 		{
-			frameResources.devicememory_to_free.emplace_back(gpu.memory);
-			gpu.memory = vk::DeviceMemory();
+			frameResources.vmamemory_to_free.emplace_back(gpu.allocation);
+			gpu.allocation = VK_NULL_HANDLE;
 		}
 		return;
 	}
@@ -3497,10 +3445,10 @@ void destroySurfaceGpuImage(VkRoot& root, VkSurfaceGpu& gpu)
 		root.dev.destroyImage(gpu.image, nullptr, root.vkDynLoader);
 		gpu.image = vk::Image();
 	}
-	if (gpu.memory)
+	if (gpu.allocation != VK_NULL_HANDLE)
 	{
-		root.dev.freeMemory(gpu.memory, nullptr, root.vkDynLoader);
-		gpu.memory = vk::DeviceMemory();
+		vmaFreeMemory(root.allocator, gpu.allocation);
+		gpu.allocation = VK_NULL_HANDLE;
 	}
 }
 
@@ -3591,8 +3539,8 @@ bool VkRoot::PipelineSurfaceAllocator::create(gfx_api::PipelineSurfaceId id, con
 			break;
 
 		case gfx_api::SurfaceProvisionMode::WsiPresentDepth:
-			createDepthStencilImage(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
-				gpu.image, gpu.memory, gpu.view, root.vkDynLoader, "swapchainDepthStencilImage");
+			createDepthStencilImage(root.allocator, root.dev, extent, vkSamples, vkFormat,
+				gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, "swapchainDepthStencilImage");
 			gpu.texture = std::make_unique<VkSwapchainDepthSurface>(root, vkFormat, vkSamples);
 			break;
 
@@ -3607,14 +3555,14 @@ bool VkRoot::PipelineSurfaceAllocator::create(gfx_api::PipelineSurfaceId id, con
 				break;
 			}
 			case gfx_api::SurfaceStorageKind::MsaaColorAttachment:
-				createColorAttachmentImage(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
-					gpu.image, gpu.memory, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
+				createColorAttachmentImage(root.allocator, root.dev, extent, vkSamples, vkFormat,
+					gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
 				gpu.texture = std::make_unique<VkAttachmentImage>(gpu.image, gpu.view, vkFormat, createSpec.width, createSpec.height, vkSamples,
 					pipelineSurfaceDebugName(id));
 				break;
 			case gfx_api::SurfaceStorageKind::DepthStencilAttachment:
-				createDepthStencilImage(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
-					gpu.image, gpu.memory, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
+				createDepthStencilImage(root.allocator, root.dev, extent, vkSamples, vkFormat,
+					gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
 				gpu.texture = std::make_unique<VkAttachmentImage>(gpu.image, gpu.view, vkFormat, createSpec.width, createSpec.height, vkSamples,
 					pipelineSurfaceDebugName(id));
 				break;
@@ -3648,10 +3596,10 @@ bool VkRoot::PipelineSurfaceAllocator::create(gfx_api::PipelineSurfaceId id, con
 			case gfx_api::SurfaceStorageKind::SampledDepth2D:
 			{
 				// Sample with depth-only aspect (matches ShadowMap cascade views).
-				createGPUImageAndViewInternal(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
+				createGPUImageAndViewInternal(root.allocator, root.dev, extent, vkSamples, vkFormat,
 					vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
 					vk::ImageAspectFlagBits::eDepth,
-					gpu.image, gpu.memory, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
+					gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
 				gpu.texture = std::make_unique<VkAttachmentImage>(gpu.image, gpu.view, vkFormat, createSpec.width, createSpec.height, vkSamples,
 					pipelineSurfaceDebugName(id));
 				break;
@@ -5548,6 +5496,7 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 #if defined(WZ_VULKANSC)
 	createManifestPipelines();
 #endif
+	gfx_api::vk::markObjectCountersStartupComplete();
 
 	return true;
 }
@@ -8683,10 +8632,13 @@ bool VkRoot::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)> callb
 		return false;
 	}
 
+	VmaAllocationCreateInfo stagingAllocInfo = {};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	selectMemoryPool(stagingAllocInfo, false);
 	return _screenshotReadback.requestCapture(
 		std::move(callback),
-		dev,
-		memprops,
+		allocator,
+		stagingAllocInfo,
 		physDeviceProps.limits.bufferImageGranularity,
 		swapchainSize,
 		surfaceFormat.format,
