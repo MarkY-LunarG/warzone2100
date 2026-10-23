@@ -25,6 +25,7 @@
 #if defined(WZ_VULKAN_ENABLED)
 
 #include "vk/pipeline_json_export.h"
+#include "vk/pipeline_manifest.h"
 
 #include "lib/framework/frame.h"
 #include "3rdparty/vulkansc_samples/VulkanSCPipelineExport.h"
@@ -138,6 +139,17 @@ void PipelineJsonExport::recordGraphicsPipeline(const std::string& name, const s
 	entry.shaderFiles = shaderFiles;
 }
 
+void PipelineJsonExport::recordRecipe(const std::string& recipe, const gfx_api::pipeline_create_info& createInfo)
+{
+	_recipes.emplace(recipe, recipeToJson(createInfo).dump());
+}
+
+void PipelineJsonExport::recordRenderPassClass(const std::string& renderPassClass, const PassLayoutKey& layout)
+{
+	// The first layout of the class: any render pass of the class is compatible with its pipelines
+	_renderPassClasses.emplace(renderPassClass, passLayoutKeyToJson(layout).dump());
+}
+
 bool PipelineJsonExport::write()
 {
 	if (_manifest.empty())
@@ -152,8 +164,11 @@ bool PipelineJsonExport::write()
 	}
 
 	// Keep the entries of earlier runs: each run reaches only the pipelines its scenes draw.
+	// A recipe or a render pass class an earlier run wrote is kept as it is, like the documents.
 	const std::string manifestPath = _directory + "/" + kManifestFileName;
 	nlohmann::ordered_json pipelines = nlohmann::ordered_json::object();
+	nlohmann::ordered_json recipes = nlohmann::ordered_json::object();
+	nlohmann::ordered_json renderPassClasses = nlohmann::ordered_json::object();
 	{
 		std::ifstream existing(manifestPath);
 		if (existing.is_open())
@@ -162,6 +177,14 @@ bool PipelineJsonExport::write()
 			if (parsed.is_object() && parsed.contains("pipelines") && parsed["pipelines"].is_object())
 			{
 				pipelines = parsed["pipelines"];
+				if (parsed.contains("recipes") && parsed["recipes"].is_object())
+				{
+					recipes = parsed["recipes"];
+				}
+				if (parsed.contains("renderPassClasses") && parsed["renderPassClasses"].is_object())
+				{
+					renderPassClasses = parsed["renderPassClasses"];
+				}
 			}
 			else
 			{
@@ -183,12 +206,42 @@ bool PipelineJsonExport::write()
 		};
 	}
 
+	for (const auto& [name, text] : _recipes)
+	{
+		if (!recipes.contains(name))
+		{
+			recipes[name] = nlohmann::ordered_json::parse(text);
+		}
+	}
+	for (const auto& [name, text] : _renderPassClasses)
+	{
+		if (!renderPassClasses.contains(name))
+		{
+			renderPassClasses[name] = nlohmann::ordered_json::parse(text);
+		}
+	}
+
 	// Sorted by name, so that the file does not depend on the order the runs built the pipelines in.
+	// (nlohmann::json sorts the keys of objects; the members of a recipe or a layout keep their order.)
 	nlohmann::json sortedPipelines = pipelines;
+	const nlohmann::json recipeNames = recipes;
+	nlohmann::ordered_json sortedRecipes = nlohmann::ordered_json::object();
+	for (const auto& item : recipeNames.items())
+	{
+		sortedRecipes[item.key()] = recipes[item.key()];
+	}
+	const nlohmann::json renderPassClassNames = renderPassClasses;
+	nlohmann::ordered_json sortedRenderPassClasses = nlohmann::ordered_json::object();
+	for (const auto& item : renderPassClassNames.items())
+	{
+		sortedRenderPassClasses[item.key()] = renderPassClasses[item.key()];
+	}
 	nlohmann::ordered_json manifest;
 	manifest["application"] = kApplicationName;
 	manifest["poolEntrySize"] = POOL_ENTRY_SIZE;
 	manifest["pipelines"] = sortedPipelines;
+	manifest["recipes"] = sortedRecipes;
+	manifest["renderPassClasses"] = sortedRenderPassClasses;
 
 	std::ofstream file(manifestPath);
 	if (!file.is_open())

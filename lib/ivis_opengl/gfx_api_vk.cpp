@@ -2260,6 +2260,7 @@ VkPSO::VkPSO(vk::Device _dev,
 	{
 		root->pipelineJsonExport->recordGraphicsPipeline(pipelineName, recipe, renderPassClass, specialization,
 			static_cast<const VkGraphicsPipelineCreateInfo&>(pso), shaderFiles);
+		root->pipelineJsonExport->recordRecipe(recipe, createInfo);
 	}
 }
 
@@ -3162,13 +3163,41 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 	}
 
 #if defined(WZ_VULKANSC)
-	// Vulkan SC: register the recipe, and build it from the pipeline cache when it is first bound
-	// (bind_pipeline), where a pipeline the cache does not have skips its draws instead of failing.
-	const bool buildWhenRegistered = false;
-#else
-	const bool buildWhenRegistered = canCreatePipelines();
+	// Vulkan SC: every pipeline was created at startup (createManifestPipelines()). The game's recipe
+	// takes the place of the manifest's, which only knew the uniform blocks by name; nothing is built.
+	if (psoID.has_value())
+	{
+		return new VkPSOId(psoID.value(), false);
+	}
+	std::string name = gfx_api::vk::pipelineRecipeName(createInfo);
+	for (size_t i = 0; i < createdPipelines.size(); ++i)
+	{
+		auto& registry = createdPipelines[i];
+		if (registry.name != name)
+		{
+			continue;
+		}
+		ASSERT(gfx_api::vk::samePipelineRecipe(registry.createInfo, createInfo), "Pipeline recipe %s differs from the manifest's", name.c_str());
+		const bool hasPointLights = std::find(createInfo.uniform_blocks.begin(), createInfo.uniform_blocks.end(),
+			std::type_index(typeid(gfx_api::PointLightsUniforms))) != createInfo.uniform_blocks.end();
+		for (VkPSO* pipeline : registry.renderPassPSO)
+		{
+			if (pipeline != nullptr)
+			{
+				ASSERT(pipeline->hasLightDataBindings == hasPointLights, "Pipeline recipe %s: the manifest has the point lights block wrong", name.c_str());
+				pipeline->uniformBlockTypes = createInfo.uniform_blocks;
+			}
+		}
+		return new VkPSOId(i, false);
+	}
+	if (canCreatePipelines())
+	{
+		debug(LOG_ERROR, "Vulkan SC: pipeline recipe %s is not in the pipeline manifest; its draws are skipped (tools/vulkansc/export_pipelines.sh)", name.c_str());
+	}
+	createdPipelines.emplace_back(createInfo, std::move(name), renderPasses.size());
+	return new VkPSOId(createdPipelines.size() - 1, false);
 #endif
-	if (!buildWhenRegistered)
+	if (!canCreatePipelines())
 	{
 		// Register the recipe without building it
 		if (!psoID.has_value())
@@ -3254,6 +3283,10 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 
 void VkRoot::rebuildPipelinesIfNecessary()
 {
+#if defined(WZ_VULKANSC)
+	// No pipeline is created after startup (and a swapchain is never created again)
+	return;
+#endif
 	if (renderPasses.empty())
 	{
 		return;
@@ -5512,6 +5545,10 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 	frameResources.copyCmdBuffer().pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eAllGraphics,
 		vk::DependencyFlags(), nullptr, nullptr, imageMemoryBarriers_TransitionDefaultDepthImage, vkDynLoader);
 
+#if defined(WZ_VULKANSC)
+	createManifestPipelines();
+#endif
+
 	return true;
 }
 
@@ -5703,12 +5740,12 @@ gfx_api::vk::sc::DeviceReservation VkRoot::vulkanSCDeviceReservation() const
 	r.maxTimestampQueriesPerPool = 2 * GPU_TIMING_SLOTS;
 	if (!vulkanSCPipelineCacheData.empty())
 	{
-		// One pool entry for each pipeline in the cache, and a few for identical recipes that are built twice
+		// One pool entry for each pipeline in the cache: each is created once, at startup (createManifestPipelines())
 		r.pipelineCacheData = vulkanSCPipelineCacheData.data();
 		r.pipelineCacheSize = vulkanSCPipelineCacheData.size();
-		r.pipelinePoolEntryCount = vulkanSCPipelineCount + 16;
+		r.pipelinePoolEntryCount = vulkanSCPipelineCount;
 		r.pipelinePoolEntrySize = gfx_api::vk::PipelineJsonExport::POOL_ENTRY_SIZE;
-		r.graphicsPipelineRequestCount = vulkanSCPipelineCount + 16;
+		r.graphicsPipelineRequestCount = vulkanSCPipelineCount;
 	}
 	return r;
 }
@@ -5757,6 +5794,152 @@ bool VkRoot::loadVulkanSCPipelineCache()
 	}
 	debug(LOG_INFO, "Vulkan SC pipeline cache: %u pipelines, %zu bytes", vulkanSCPipelineCount, vulkanSCPipelineCacheData.size());
 	return true;
+}
+
+bool VkRoot::createManifestPipelines()
+{
+	if (!canCreatePipelines())
+	{
+		return false;
+	}
+
+	// The manifest that came with the pipeline cache: base.wz, or WZ_VULKANSC_PIPELINE_MANIFEST with
+	// WZ_VULKANSC_PIPELINE_CACHE
+	std::string manifestText;
+	const char* manifestPath = "shaders/vksc/wz2100_pipelines.json";
+	if (const char* manifestFile = getenv("WZ_VULKANSC_PIPELINE_MANIFEST"))
+	{
+		std::ifstream file(manifestFile, std::ios::binary);
+		if (!file.is_open())
+		{
+			debug(LOG_ERROR, "Vulkan SC: could not open the pipeline manifest %s", manifestFile);
+			return false;
+		}
+		manifestText.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+		manifestPath = manifestFile;
+	}
+	else
+	{
+		PHYSFS_file* fp = PHYSFS_openRead(manifestPath);
+		if (fp == nullptr)
+		{
+			debug(LOG_ERROR, "Vulkan SC: no pipeline manifest (%s); nothing is drawn", manifestPath);
+			return false;
+		}
+		const PHYSFS_sint64 fileSize = PHYSFS_fileLength(fp);
+		if (fileSize > 0 && fileSize < std::numeric_limits<PHYSFS_sint32>::max())
+		{
+			manifestText.resize(static_cast<size_t>(fileSize));
+			WZ_PHYSFS_readBytes(fp, manifestText.data(), static_cast<PHYSFS_uint32>(fileSize));
+		}
+		PHYSFS_close(fp);
+	}
+	const nlohmann::json manifest = nlohmann::json::parse(manifestText, nullptr, false);
+	if (!manifest.is_object() || !manifest.contains("pipelines") || !manifest.contains("recipes") || !manifest.contains("renderPassClasses"))
+	{
+		debug(LOG_ERROR, "Vulkan SC: %s is not a pipeline manifest with recipes (export it again: tools/vulkansc/export_pipelines.sh)", manifestPath);
+		return false;
+	}
+	const nlohmann::json& pipelines = manifest["pipelines"];
+
+	// The specialization values: the graphics profile's, the same in every pipeline that has them
+	std::map<char, std::string> specializationValues;
+	gfx_api::lighting_constants constants = shadowConstants;
+	for (const auto& pipeline : pipelines.items())
+	{
+		const std::string specialization = pipeline.value().value("specialization", "-");
+		if (!gfx_api::vk::parseSpecialization(specialization, constants))
+		{
+			debug(LOG_ERROR, "Vulkan SC: pipeline %s has a specialization the build cannot read: %s", pipeline.key().c_str(), specialization.c_str());
+			continue;
+		}
+		std::istringstream values(specialization);
+		std::string value;
+		while (specialization != "-" && std::getline(values, value, '.'))
+		{
+			const auto inserted = specializationValues.emplace(value[0], value);
+			if (inserted.first->second != value)
+			{
+				debug(LOG_ERROR, "Vulkan SC: the pipeline manifest has two values of one specialization constant (%s and %s): it must be for one graphics profile",
+					inserted.first->second.c_str(), value.c_str());
+			}
+		}
+	}
+	shadowConstants = constants;
+
+	// A render pass of each compatibility class: the render graph's own render passes of the class
+	// share its pipelines (RenderPassDetails::psoSlot)
+	std::map<std::string, size_t> classRenderPasses;
+	for (const auto& renderPassClass : manifest["renderPassClasses"].items())
+	{
+		const auto key = gfx_api::vk::passLayoutKeyFromJson(renderPassClass.value());
+		if (!key.has_value())
+		{
+			continue;
+		}
+		const size_t renderPassId = getOrCreatePassRenderPassId(key.value());
+		if (renderPasses[renderPassId].className != renderPassClass.key())
+		{
+			debug(LOG_ERROR, "Vulkan SC: the render pass layout of class %s makes class %s (export the pipelines again)",
+				renderPassClass.key().c_str(), renderPasses[renderPassId].className.c_str());
+			continue;
+		}
+		classRenderPasses.emplace(renderPassClass.key(), renderPassId);
+	}
+
+	// The recipes, checked against their names (which hash what they hold)
+	std::map<std::string, size_t> recipeIds;
+	for (const auto& recipe : manifest["recipes"].items())
+	{
+		const auto createInfo = gfx_api::vk::recipeFromJson(recipe.value(), manifestRecipeNames);
+		if (!createInfo.has_value())
+		{
+			continue;
+		}
+		std::string name = gfx_api::vk::pipelineRecipeName(createInfo.value());
+		if (name != recipe.key())
+		{
+			debug(LOG_ERROR, "Vulkan SC: pipeline recipe %s reads back as %s (export the pipelines again)", recipe.key().c_str(), name.c_str());
+			continue;
+		}
+		recipeIds.emplace(name, createdPipelines.size());
+		createdPipelines.emplace_back(createInfo.value(), std::move(name), renderPasses.size());
+	}
+
+	size_t created = 0;
+	size_t failed = 0;
+	for (const auto& pipeline : pipelines.items())
+	{
+		const std::string recipe = pipeline.value().value("recipe", "");
+		const std::string renderPassClass = pipeline.value().value("renderPassClass", "");
+		const auto recipeId = recipeIds.find(recipe);
+		const auto renderPassId = classRenderPasses.find(renderPassClass);
+		if (recipeId == recipeIds.end() || renderPassId == classRenderPasses.end())
+		{
+			debug(LOG_ERROR, "Vulkan SC: pipeline %s has no recipe or render pass class in the manifest", pipeline.key().c_str());
+			++failed;
+			continue;
+		}
+		auto& registry = createdPipelines[recipeId->second];
+		const auto& renderPass = renderPasses[renderPassId->second];
+		if (registry.renderPassPSO[renderPass.psoSlot] != nullptr)
+		{
+			continue;
+		}
+		try
+		{
+			registry.renderPassPSO[renderPass.psoSlot] = new VkPSO(dev, physDeviceProps.limits, registry.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
+			++created;
+		}
+		catch (const vk::SystemError&)
+		{
+			// VkPSO logged the pipeline's name
+			++failed;
+		}
+	}
+	debug(LOG_INFO, "Vulkan SC: created %zu pipelines at startup (%zu recipes, %zu render pass classes); %zu failed",
+		created, recipeIds.size(), classRenderPasses.size(), failed);
+	return failed == 0;
 }
 
 // Vulkan SC has no vkFreeMemory, vkDestroyCommandPool, vkDestroyDescriptorPool, vkDestroySwapchainKHR,
@@ -6838,7 +7021,17 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 	auto& renderPass = renderPasses[currentRenderPassId];
 	VkPSO* newPSO = pipelineInfo.renderPassPSO[renderPass.psoSlot];
 	const auto pipelineKey = std::make_pair(newPSOId->psoID, renderPass.psoSlot);
+#if defined(WZ_VULKANSC)
+	// Every pipeline was created at startup: one that wasn't is not in the pipeline manifest
+	if (!newPSO && canCreatePipelines() && unavailablePipelines.insert(pipelineKey).second)
+	{
+		debug(LOG_ERROR, "Vulkan SC: pipeline %s for render pass class %s was not created at startup: it is not in the pipeline manifest; its draws are skipped (tools/vulkansc/export_pipelines.sh)",
+			pipelineInfo.name.c_str(), renderPass.className.c_str());
+	}
+	if (!newPSO)
+#else
 	if (!newPSO && (!canCreatePipelines() || unavailablePipelines.count(pipelineKey) != 0))
+#endif
 	{
 		skipDrawsWithoutPipeline = true;
 		currentPSO = nullptr;
@@ -6854,16 +7047,7 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 		}
 		catch (const vk::SystemError&)
 		{
-#if defined(WZ_VULKANSC)
-			// Not in the pipeline cache (VkPSO logged its name): run the export session that draws it
-			// (tools/vulkansc/export_pipelines.sh) and build the cache again. Until then, skip its draws.
-			unavailablePipelines.insert(pipelineKey);
-			skipDrawsWithoutPipeline = true;
-			currentPSO = nullptr;
-			return;
-#else
 			throw;
-#endif
 		}
 		pipelineInfo.renderPassPSO[renderPass.psoSlot] = newPSO;
 	}
@@ -8549,6 +8733,16 @@ bool VkRoot::setShadowConstants(gfx_api::lighting_constants newValues)
 		return true;
 	}
 
+#if defined(WZ_VULKANSC)
+	// The pipelines were created at startup with the manifest's values (the graphics profile's): nothing is rebuilt
+	if (!(pipelineSpecializationValues(newValues) == pipelineSpecializationValues(shadowConstants)))
+	{
+		debug(LOG_ERROR, "Vulkan SC: these shadow and point light settings need other pipelines than the graphics profile's (shadow mode %" PRIu32 ", filter size %" PRIu32 ", cascades %" PRIu32 ", per pixel point lights %d); the profile's pipelines are kept",
+			newValues.shadowMode, newValues.shadowFilterSize, newValues.shadowCascadesCount, newValues.isPointLightPerPixelEnabled ? 1 : 0);
+	}
+	shadowConstants = newValues;
+	return true;
+#endif
 	shadowConstants = newValues;
 
 	// Must rebuild any shaders that used these values
@@ -8617,6 +8811,11 @@ void VkRoot::reportFrameResourcePeaks(code_part part) const
 
 bool VkRoot::debugRecompileAllPipelines()
 {
+#if defined(WZ_VULKANSC)
+	// Vulkan SC has no shaders to read again, and creates no pipeline after startup
+	debug(LOG_INFO, "Vulkan SC: pipelines cannot be recompiled");
+	return false;
+#endif
 	// Read the shaders again: the new pipelines get new shader modules.
 	sharedPipelineObjects.releaseShaderModules(dev, vkDynLoader);
 	for (auto& pipelineInfo : createdPipelines)

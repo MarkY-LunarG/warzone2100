@@ -335,7 +335,8 @@ endif()
 #
 # The pipeline cache compiler (PCC) builds the cache from the pipeline JSON that the desktop Vulkan build
 # exported (tools/vulkansc/export_pipelines.sh, into data/vulkansc/<profile>) and the SPIR-V of this build.
-# The cache goes into base.wz as shaders/vksc/wz2100.vksc.bin. A cache is specific to the Vulkan SC
+# The cache goes into base.wz as shaders/vksc/wz2100.vksc.bin, with the manifest (wz2100_pipelines.json),
+# from which the Vulkan SC build creates every pipeline at startup. A cache is specific to the Vulkan SC
 # implementation whose PCC built it. The defaults are pcconvk's options (VulkanSC-Emulation); for
 # nvidia-pcc, use single-dash options and an empty prefix option, as vulkansc-samples documents.
 if(WZ_ENABLE_BACKEND_VULKANSC AND TARGET glsl_compilation)
@@ -359,17 +360,19 @@ if(WZ_ENABLE_BACKEND_VULKANSC AND TARGET glsl_compilation)
 		set(_vksc_pcc_input_dir "${CMAKE_CURRENT_BINARY_DIR}/vulkansc_pcc_input")
 		set(_vksc_cache_dir "${CMAKE_CURRENT_BINARY_DIR}/base/shaders/vksc")
 		set(_vksc_cache "${_vksc_cache_dir}/wz2100.vksc.bin")
+		set(_vksc_manifest "${_vksc_json_dir}/wz2100_pipelines.json")
 		set(_vksc_prefix_args)
 		if(WZ_VULKANSC_PCC_PREFIX_ARG)
 			set(_vksc_prefix_args "${WZ_VULKANSC_PCC_PREFIX_ARG}" "wz2100.pc")
 		endif()
 		separate_arguments(_vksc_extra_flags UNIX_COMMAND "${WZ_VULKANSC_PCC_EXTRA_FLAGS}")
-		add_custom_command(OUTPUT "${_vksc_cache}"
+		add_custom_command(OUTPUT "${_vksc_cache}" "${_vksc_cache_dir}/wz2100_pipelines.json"
 			COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_vksc_pcc_input_dir}"
 			COMMAND "${CMAKE_COMMAND}" -E make_directory "${_vksc_pcc_input_dir}" "${_vksc_cache_dir}"
 			COMMAND "${CMAKE_COMMAND}" -E copy ${_vksc_json_files} ${SHADER_LIST} "${_vksc_pcc_input_dir}"
 			COMMAND "${WZ_VULKANSC_PCC}" "${WZ_VULKANSC_PCC_PATH_ARG}" "${_vksc_pcc_input_dir}" ${_vksc_prefix_args} "${WZ_VULKANSC_PCC_OUT_ARG}" "${_vksc_cache}" ${_vksc_extra_flags}
-			DEPENDS ${_vksc_json_files} ${SHADER_LIST}
+			COMMAND "${CMAKE_COMMAND}" -E copy "${_vksc_manifest}" "${_vksc_cache_dir}"
+			DEPENDS ${_vksc_json_files} "${_vksc_manifest}" ${SHADER_LIST}
 			COMMENT "Building the Vulkan SC pipeline cache (${_vksc_json_count} pipelines)"
 			VERBATIM
 		)

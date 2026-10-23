@@ -40,12 +40,14 @@
 #include "vk/screen_frame_coordinator.h"
 #include "vk/screenshot_readback.h"
 #include "vk/pipeline_json_export.h"
+#include "vk/pipeline_manifest.h"
 #include "vk/shared_pipeline_objects.h"
 #include "vk/vksc_bridge.h"
 #include "vk/warm_entry.h"
 #include <algorithm>
 #include <sstream>
 #include <map>
+#include <deque>
 #include <set>
 #include <vector>
 #include <limits>
@@ -842,6 +844,12 @@ struct VkRoot final : gfx_api::context
 	void installVulkanSCRemovedEntryPoints();
 	void logVulkanSCProperties();
 	bool loadVulkanSCPipelineCache();
+	// Creates every pipeline of the pipeline manifest (data/vulkansc/<profile>/wz2100_pipelines.json, in
+	// base.wz next to the pipeline cache), with its render passes, at the end of startup. No pipeline is
+	// created after it: the game's recipes take the place of the manifest's (build_pipeline()).
+	bool createManifestPipelines();
+	// The uniform block names of the recipes read from the manifest (pipeline_create_info points at them)
+	std::deque<std::string> manifestRecipeNames;
 	bool createVulkanSCMemoryPools();
 	void updateVulkanSCMemoryPoolPeaks();
 	void reportVulkanSCMemoryPools(code_part part);

@@ -387,5 +387,2716 @@
             ],
             "specialization": "-"
         }
+    },
+    "recipes": {
+        "Component depth prepass program/b2.d0.m255.o0.s2.c0.p2/e5cbac41": {
+            "shader": 4,
+            "shaderName": "Component depth prepass program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Component program/b0.d0.m255.o0.s2.c0.p2/4d357dad": {
+            "shader": 2,
+            "shaderName": "Component program",
+            "blend": 0,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Component program/b2.d0.m255.o0.s2.c0.p2/4d357dad": {
+            "shader": 2,
+            "shaderName": "Component program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Component program/b2.d0.m255.o0.s2.c0.p2/d6349227": {
+            "shader": 1,
+            "shaderName": "Component program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "instanceuniforms",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Component program/b2.d0.m255.o0.s2.c2.p2/ba645b92": {
+            "shader": 3,
+            "shaderName": "Component program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 2,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Plain program/b0.d0.m255.o0.s2.c0.p2/4d357dad": {
+            "shader": 7,
+            "shaderName": "Plain program",
+            "blend": 0,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Plain program/b0.d1.m255.o0.s2.c0.p2/4d357dad": {
+            "shader": 7,
+            "shaderName": "Plain program",
+            "blend": 0,
+            "depth": 1,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Plain program/b1.d0.m255.o0.s2.c0.p2/4d357dad": {
+            "shader": 7,
+            "shaderName": "Plain program",
+            "blend": 1,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Plain program/b1.d1.m255.o0.s2.c0.p2/4d357dad": {
+            "shader": 7,
+            "shaderName": "Plain program",
+            "blend": 1,
+            "depth": 1,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "globaluniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "meshuniforms",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        },
+                        {
+                            "id": 11,
+                            "type": 3,
+                            "offset": 84
+                        }
+                    ]
+                }
+            ]
+        },
+        "Rect instanced program/b2.d3.m255.o0.s2.c0.p3/e62072dc": {
+            "shader": 16,
+            "shaderName": "Rect instanced program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 96,
+                    "rate": 1,
+                    "attributes": [
+                        {
+                            "id": 5,
+                            "type": 2,
+                            "offset": 0
+                        },
+                        {
+                            "id": 6,
+                            "type": 2,
+                            "offset": 16
+                        },
+                        {
+                            "id": 7,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 8,
+                            "type": 2,
+                            "offset": 48
+                        },
+                        {
+                            "id": 9,
+                            "type": 2,
+                            "offset": 64
+                        },
+                        {
+                            "id": 10,
+                            "type": 3,
+                            "offset": 80
+                        }
+                    ]
+                }
+            ]
+        },
+        "Rect program/b0.d3.m255.o0.s2.c0.p3/840e0166": {
+            "shader": 15,
+            "shaderName": "Rect program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Rect program/b2.d3.m255.o0.s2.c0.p3/840e0166": {
+            "shader": 15,
+            "shaderName": "Rect program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "SMAA blending weights program/b2.d3.m255.o0.s2.c3.p2/9ecfa08d": {
+            "shader": 40,
+            "shaderName": "SMAA blending weights program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "SMAA edge detection program/b2.d3.m255.o0.s2.c3.p2/504573e8": {
+            "shader": 39,
+            "shaderName": "SMAA edge detection program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "SMAA neighborhood blending program/b2.d3.m255.o0.s2.c3.p2/1092432a": {
+            "shader": 41,
+            "shaderName": "SMAA neighborhood blending program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "SSAO blur program/b2.d3.m255.o0.s2.c3.p2/fef10cae": {
+            "shader": 43,
+            "shaderName": "SSAO blur program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "SSAO generate program/b2.d3.m255.o0.s2.c3.p2/4b1265e8": {
+            "shader": 42,
+            "shaderName": "SSAO generate program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 1,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Scene compose SSAO program/b2.d3.m255.o0.s2.c3.p2/b070d709": {
+            "shader": 45,
+            "shaderName": "Scene compose SSAO program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Scene fog program/b2.d3.m255.o0.s2.c3.p2/fef10cae": {
+            "shader": 50,
+            "shaderName": "Scene fog program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Text program/b5.d3.m255.o0.s2.c3.p3/5e411fa7": {
+            "shader": 24,
+            "shaderName": "Text program",
+            "blend": 5,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Textured rect program/b0.d3.m255.o0.s2.c0.p3/5e411fa7": {
+            "shader": 17,
+            "shaderName": "Textured rect program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "Textured rect program/b0.d3.m255.o0.s2.c0.p3/f0fcf684": {
+            "shader": 17,
+            "shaderName": "Textured rect program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 3,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "construction line program/b1.d0.m255.o0.s2.c0.p3/3984b2ec": {
+            "shader": 22,
+            "shaderName": "construction line program",
+            "blend": 1,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "gfx_color program/b0.d3.m255.o0.s2.c0.p1/15d10d4e": {
+            "shader": 18,
+            "shaderName": "gfx_color program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 1,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 2,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "gfx_color program/b0.d3.m255.o0.s2.c0.p3/15d10d4e": {
+            "shader": 18,
+            "shaderName": "gfx_color program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 2,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "gfx_text program/b0.d3.m255.o0.s2.c0.p3/db0f1867": {
+            "shader": 19,
+            "shaderName": "gfx_text program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "gfx_text program/b2.d3.m255.o0.s2.c0.p3/db0f1867": {
+            "shader": 19,
+            "shaderName": "gfx_text program",
+            "blend": 2,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 3,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 4,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "line program/b0.d3.m255.o0.s2.c0.p0/840e0166": {
+            "shader": 23,
+            "shaderName": "line program",
+            "blend": 0,
+            "depth": 3,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 0,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 4,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 3,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "skybox program/b0.d1.m255.o0.s2.c0.p2/896ccd87": {
+            "shader": 20,
+            "shaderName": "skybox program",
+            "blend": 0,
+            "depth": 1,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 1,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 12,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                },
+                {
+                    "stride": 8,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 1,
+                            "type": 0,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "terrain decals program/b2.d1.m255.o0.s2.c0.p2/1211f267": {
+            "shader": 27,
+            "shaderName": "terrain decals program",
+            "blend": 2,
+            "depth": 1,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                },
+                {
+                    "name": "pointlights",
+                    "pointLights": true
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 6,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 6,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 3,
+                    "sampler": 6,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 4,
+                    "sampler": 6,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 5,
+                    "sampler": 3,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 6,
+                    "sampler": 3,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 7,
+                    "sampler": 3,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 8,
+                    "sampler": 3,
+                    "target": 1,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 9,
+                    "sampler": 2,
+                    "target": 2,
+                    "border": 3,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 60,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        },
+                        {
+                            "id": 1,
+                            "type": 0,
+                            "offset": 12
+                        },
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 20
+                        },
+                        {
+                            "id": 4,
+                            "type": 2,
+                            "offset": 32
+                        },
+                        {
+                            "id": 5,
+                            "type": 5,
+                            "offset": 48
+                        },
+                        {
+                            "id": 6,
+                            "type": 4,
+                            "offset": 52
+                        },
+                        {
+                            "id": 7,
+                            "type": 3,
+                            "offset": 56
+                        }
+                    ]
+                }
+            ]
+        },
+        "terrain_depth program/b2.d0.m0.o1.s2.c0.p2/2df6dd58": {
+            "shader": 8,
+            "shaderName": "terrain_depth program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 0,
+            "polygonOffset": true,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 1,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 24,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "terrain_depth_prepass program/b2.d0.m255.o1.s2.c0.p2/9602f7b5": {
+            "shader": 10,
+            "shaderName": "terrain_depth_prepass program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": true,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 24,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        },
+                        {
+                            "id": 3,
+                            "type": 1,
+                            "offset": 12
+                        }
+                    ]
+                }
+            ]
+        },
+        "terrain_depthmap program/b2.d0.m0.o0.s2.c3.p2/2df6dd58": {
+            "shader": 9,
+            "shaderName": "terrain_depthmap program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 0,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 3,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 1,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 24,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 1,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "water program/b3.d1.m255.o0.s2.c0.p2/ef7f18d3": {
+            "shader": 12,
+            "shaderName": "water program",
+            "blend": 3,
+            "depth": 1,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [
+                {
+                    "id": 0,
+                    "sampler": 6,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 1,
+                    "sampler": 6,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                },
+                {
+                    "id": 2,
+                    "sampler": 0,
+                    "target": 0,
+                    "border": 0,
+                    "stage": 0
+                }
+            ],
+            "vertexBuffers": [
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        },
+        "water_depth_prepass program/b2.d0.m255.o0.s2.c0.p2/65ae14b3": {
+            "shader": 13,
+            "shaderName": "water_depth_prepass program",
+            "blend": 2,
+            "depth": 0,
+            "outputMask": 255,
+            "polygonOffset": false,
+            "stencil": 2,
+            "cull": 0,
+            "primitive": 2,
+            "uniformBlocks": [
+                {
+                    "name": "cbuffer",
+                    "pointLights": false
+                }
+            ],
+            "textures": [],
+            "vertexBuffers": [
+                {
+                    "stride": 16,
+                    "rate": 0,
+                    "attributes": [
+                        {
+                            "id": 0,
+                            "type": 2,
+                            "offset": 0
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    "renderPassClasses": {
+        "126x1/25837de1": {
+            "colorFormats": [],
+            "colorLoadOps": [],
+            "colorStoreOps": [],
+            "colorSamples": [],
+            "colorInitialLayouts": [],
+            "colorFinalLayouts": [],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": 126,
+            "depthLoadOp": 0,
+            "depthStoreOp": 0,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 4
+        },
+        "16x1/0ec2f733": {
+            "colorFormats": [
+                16
+            ],
+            "colorLoadOps": [
+                2
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                5
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": null,
+            "depthLoadOp": 2,
+            "depthStoreOp": 1,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        },
+        "37x1.126x1/e66d4f6f": {
+            "colorFormats": [
+                37
+            ],
+            "colorLoadOps": [
+                0
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                5
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": 126,
+            "depthLoadOp": 0,
+            "depthStoreOp": 0,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 4
+        },
+        "37x1/0ec2f733": {
+            "colorFormats": [
+                37
+            ],
+            "colorLoadOps": [
+                2
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                5
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": null,
+            "depthLoadOp": 2,
+            "depthStoreOp": 1,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        },
+        "44x1.130x1/a846c127": {
+            "colorFormats": [
+                44
+            ],
+            "colorLoadOps": [
+                0
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                2
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": 130,
+            "depthLoadOp": 0,
+            "depthStoreOp": 1,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        },
+        "64x1.126x1/0ba7285e": {
+            "colorFormats": [
+                64
+            ],
+            "colorLoadOps": [
+                1
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                2
+            ],
+            "colorFinalLayouts": [
+                5
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": 126,
+            "depthLoadOp": 1,
+            "depthStoreOp": 3,
+            "depthInitialLayout": 4,
+            "depthFinalLayout": 3
+        },
+        "64x1/0ec2f733": {
+            "colorFormats": [
+                64
+            ],
+            "colorLoadOps": [
+                2
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                5
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": null,
+            "depthLoadOp": 2,
+            "depthStoreOp": 1,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        },
+        "64x1/1c432c08": {
+            "colorFormats": [
+                64
+            ],
+            "colorLoadOps": [
+                2
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                2
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": null,
+            "depthLoadOp": 2,
+            "depthStoreOp": 1,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        },
+        "64x4.130x4.64x1/0695a0d0": {
+            "colorFormats": [
+                64
+            ],
+            "colorLoadOps": [
+                0
+            ],
+            "colorStoreOps": [
+                1
+            ],
+            "colorSamples": [
+                4
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                2
+            ],
+            "resolveFormat": 64,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": 5,
+            "depthFormat": 130,
+            "depthLoadOp": 0,
+            "depthStoreOp": 3,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        },
+        "9x1/0ec2f733": {
+            "colorFormats": [
+                9
+            ],
+            "colorLoadOps": [
+                0
+            ],
+            "colorStoreOps": [
+                0
+            ],
+            "colorSamples": [
+                1
+            ],
+            "colorInitialLayouts": [
+                0
+            ],
+            "colorFinalLayouts": [
+                5
+            ],
+            "resolveFormat": null,
+            "resolveLoadOp": 2,
+            "resolveStoreOp": 0,
+            "resolveInitialLayout": null,
+            "resolveFinalLayout": null,
+            "depthFormat": null,
+            "depthLoadOp": 2,
+            "depthStoreOp": 1,
+            "depthInitialLayout": null,
+            "depthFinalLayout": 3
+        }
     }
 }
