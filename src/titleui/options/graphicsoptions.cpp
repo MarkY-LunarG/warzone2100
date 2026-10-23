@@ -103,6 +103,20 @@ OptionInfo::AvailabilityResult PerPixelLightingEnabled(const OptionInfo& optionI
 	return result;
 }
 
+// The Vulkan SC pipeline cache has the pipelines of one graphics profile, which sets these options at startup
+// (see applyVulkanSCProfile in configuration.cpp).
+OptionInfo::AvailabilityResult NotFixedByVulkanSCProfile(const OptionInfo&)
+{
+	OptionInfo::AvailabilityResult result;
+#if defined(WZ_VULKANSC)
+	result.available = (war_getGfxBackend() != video_backend::vulkansc);
+	result.localizedUnavailabilityReason = _("Set by the Vulkan SC graphics profile: the pipeline cache has the pipelines of its settings only.");
+#else
+	result.available = true;
+#endif
+	return result;
+}
+
 OptionInfo::AvailabilityResult UpscalingSharpnessAvailable(const OptionInfo&)
 {
 	OptionInfo::AvailabilityResult result;
@@ -121,6 +135,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	result->addSection(OptionsSection(N_("Terrain"), ""), true);
 	{
 		auto optionInfo = OptionInfo("gfx.terrainAppearance", N_("Terrain Appearance"), "");
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<TerrainShaderQuality>::make(
 			[]() {
 				OptionChoices<TerrainShaderQuality> result;
@@ -207,6 +222,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	result->addSection(OptionsSection(N_("Shadows"), ""), true);
 	{
 		auto optionInfo = OptionInfo("gfx.drawShadows", N_("Draw Shadows"), "");
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<bool>::make(
 			[]() {
 				OptionChoices<bool> result;
@@ -226,6 +242,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.drawShadowsTerrain", N_("Terrain Shadows"), N_("Whether terrain casts shadows."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		optionInfo.addAvailabilityCondition(ShadowsEnabled);
 		optionInfo.addAvailabilityCondition(SupportsShadowMapping);
 		auto valueChanger = OptionsDropdown<bool>::make(
@@ -247,6 +264,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.shadowResolution", N_("Shadow Resolution"), N_("The internal resolution used to render shadow maps. Higher values improve shadow appearance at the expense of performance and memory usage."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		optionInfo.addAvailabilityCondition(ShadowsEnabled);
 		optionInfo.addAvailabilityCondition(SupportsShadowMapping);
 		auto valueChanger = OptionsDropdown<uint32_t>::make(
@@ -283,6 +301,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.shadowFiltering", N_("Shadow Filtering"), N_("How much filtering / smoothing is applied to shadow appearance. Higher settings smooth shadows more at the expense of performance."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		optionInfo.addAvailabilityCondition(ShadowsEnabled);
 		optionInfo.addAvailabilityCondition(SupportsShadowMapping);
 		auto valueChanger = OptionsDropdown<uint32_t>::make(
@@ -325,6 +344,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	result->addSection(OptionsSection(N_("Lighting"), ""), true);
 	{
 		auto optionInfo = OptionInfo("gfx.pointLights", N_("Point Lights"), "");
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		optionInfo.addAvailabilityCondition(IsNotInGame);
 		optionInfo.addAvailabilityCondition(PerPixelLightingAvailable);
 		auto valueChanger = OptionsDropdown<bool>::make(
@@ -404,6 +424,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	result->addSection(OptionsSection(N_("Effects"), ""), true);
 	{
 		auto optionInfo = OptionInfo("gfx.fog", N_("Fog"), "");
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<bool>::make(
 			[]() {
 				OptionChoices<bool> result;
@@ -432,6 +453,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.ssao", N_("SSAO"), N_("Screen-space ambient occlusion. Darkens creases and contact areas for stronger depth cues. May impact performance."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<SSAO_MODE>::make(
 			[]() {
 				OptionChoices<SSAO_MODE> result;
@@ -455,6 +477,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.ssr", N_("SSR"), N_("Screen-space reflections (water). May impact performance."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		optionInfo.addAvailabilityCondition(RemasteredTerrainAppearanceAvailable);
 		auto valueChanger = OptionsDropdown<SSR_MODE>::make(
 			[]() {
@@ -608,6 +631,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.renderResolution", N_("Render Resolution"), N_("The percentage of the display resolution used to render the 3D world, which is then upscaled to your display. Lower values improve performance at the cost of sharpness. The interface is always rendered at full resolution."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<uint32_t>::make(
 			[]() {
 				OptionChoices<uint32_t> result;
@@ -646,6 +670,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.upscaling", N_("Upscaling"), N_("How the 3D world is upscaled to your display when Render Resolution is below Native. FSR 1.0 (AMD FidelityFX Super Resolution) preserves edges and detail better than bilinear filtering."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<SCENE_UPSCALING_MODE>::make(
 			[]() {
 				OptionChoices<SCENE_UPSCALING_MODE> result;
@@ -702,6 +727,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.antialiasing", N_("Antialiasing"), "");
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		optionInfo.addAvailabilityCondition(IsNotInGame);
 		optionInfo.setRequiresRestart(true);
 		auto valueChanger = OptionsDropdown<int>::make(
@@ -732,6 +758,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.smaa", N_("SMAA"), N_("Post-process antialiasing over the 3D world. Works alongside Antialiasing and improves FSR 1.0 upscaling quality."));
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<SMAA_MODE>::make(
 			[]() {
 				OptionChoices<SMAA_MODE> result;
@@ -759,6 +786,7 @@ std::shared_ptr<OptionsForm> makeGraphicsOptionsForm()
 	}
 	{
 		auto optionInfo = OptionInfo("gfx.vsync", N_("Vertical Sync"), "");
+		optionInfo.addAvailabilityCondition(NotFixedByVulkanSCProfile);
 		auto valueChanger = OptionsDropdown<gfx_api::context::swap_interval_mode>::make(
 			[]() {
 				OptionChoices<gfx_api::context::swap_interval_mode> result;
