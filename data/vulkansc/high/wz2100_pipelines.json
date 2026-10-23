@@ -1,0 +1,358 @@
+{
+    "application": "wz2100",
+    "poolEntrySize": 1048576,
+    "pipelines": {
+        "Component depth prepass program/b2.d0.m255.o0.s2.c0.p2/e5cbac41/37x1.126x1/e66d4f6f/-": {
+            "document": "wz2100.pc.e33b0508484c5840dc42e94e3e0f9311.json",
+            "identifier": "e33b0508484c5840dc42e94e3e0f9311",
+            "recipe": "Component depth prepass program/b2.d0.m255.o0.s2.c0.p2/e5cbac41",
+            "renderPassClass": "37x1.126x1/e66d4f6f",
+            "shaderFiles": [
+                "tcmask_depth_prepass_instanced.vert.spv",
+                "tcmask_depth_prepass_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Component program/b0.d0.m255.o0.s2.c0.p2/4d357dad/64x1.126x1/0ba7285e/m1.f5.c3.l0": {
+            "document": "wz2100.pc.3c9cd0fe1f2d6b6c2fada26914a677f1.json",
+            "identifier": "3c9cd0fe1f2d6b6c2fada26914a677f1",
+            "recipe": "Component program/b0.d0.m255.o0.s2.c0.p2/4d357dad",
+            "renderPassClass": "64x1.126x1/0ba7285e",
+            "shaderFiles": [
+                "tcmask_instanced.vert.spv",
+                "tcmask_instanced.frag.spv"
+            ],
+            "specialization": "m1.f5.c3.l0"
+        },
+        "Component program/b2.d0.m255.o0.s2.c0.p2/4d357dad/64x4.130x4.64x1/0695a0d0/m1.f5.c3.l0": {
+            "document": "wz2100.pc.c3d01740013562b910ccbb8d7a192652.json",
+            "identifier": "c3d01740013562b910ccbb8d7a192652",
+            "recipe": "Component program/b2.d0.m255.o0.s2.c0.p2/4d357dad",
+            "renderPassClass": "64x4.130x4.64x1/0695a0d0",
+            "shaderFiles": [
+                "tcmask_instanced.vert.spv",
+                "tcmask_instanced.frag.spv"
+            ],
+            "specialization": "m1.f5.c3.l0"
+        },
+        "Component program/b2.d0.m255.o0.s2.c2.p2/ba645b92/126x1/25837de1/-": {
+            "document": "wz2100.pc.782e7084093b87a1ff4f4e0efe1d5dbe.json",
+            "identifier": "782e7084093b87a1ff4f4e0efe1d5dbe",
+            "recipe": "Component program/b2.d0.m255.o0.s2.c2.p2/ba645b92",
+            "renderPassClass": "126x1/25837de1",
+            "shaderFiles": [
+                "tcmask_depth_instanced.vert.spv",
+                "tcmask_depth_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Plain program/b0.d0.m255.o0.s2.c0.p2/4d357dad/64x1.126x1/0ba7285e/-": {
+            "document": "wz2100.pc.0b45a7a6ad347bf3d55df9e129dedc02.json",
+            "identifier": "0b45a7a6ad347bf3d55df9e129dedc02",
+            "recipe": "Plain program/b0.d0.m255.o0.s2.c0.p2/4d357dad",
+            "renderPassClass": "64x1.126x1/0ba7285e",
+            "shaderFiles": [
+                "nolight_instanced.vert.spv",
+                "nolight_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Plain program/b0.d1.m255.o0.s2.c0.p2/4d357dad/64x1.126x1/0ba7285e/-": {
+            "document": "wz2100.pc.a432e300e41c2be4b7b3178d4ca77c81.json",
+            "identifier": "a432e300e41c2be4b7b3178d4ca77c81",
+            "recipe": "Plain program/b0.d1.m255.o0.s2.c0.p2/4d357dad",
+            "renderPassClass": "64x1.126x1/0ba7285e",
+            "shaderFiles": [
+                "nolight_instanced.vert.spv",
+                "nolight_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Plain program/b1.d0.m255.o0.s2.c0.p2/4d357dad/64x1.126x1/0ba7285e/-": {
+            "document": "wz2100.pc.a2559c6d108f5a4a509c21014177d34b.json",
+            "identifier": "a2559c6d108f5a4a509c21014177d34b",
+            "recipe": "Plain program/b1.d0.m255.o0.s2.c0.p2/4d357dad",
+            "renderPassClass": "64x1.126x1/0ba7285e",
+            "shaderFiles": [
+                "nolight_instanced.vert.spv",
+                "nolight_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Plain program/b1.d1.m255.o0.s2.c0.p2/4d357dad/64x1.126x1/0ba7285e/-": {
+            "document": "wz2100.pc.f0fa647ac1c29949ee388b18a072a65c.json",
+            "identifier": "f0fa647ac1c29949ee388b18a072a65c",
+            "recipe": "Plain program/b1.d1.m255.o0.s2.c0.p2/4d357dad",
+            "renderPassClass": "64x1.126x1/0ba7285e",
+            "shaderFiles": [
+                "nolight_instanced.vert.spv",
+                "nolight_instanced.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Rect program/b0.d3.m255.o0.s2.c0.p3/840e0166/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.99892c288b13cbe4a789658c36a7426f.json",
+            "identifier": "99892c288b13cbe4a789658c36a7426f",
+            "recipe": "Rect program/b0.d3.m255.o0.s2.c0.p3/840e0166",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "rect.vert.spv",
+                "rect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Rect program/b2.d3.m255.o0.s2.c0.p3/840e0166/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.19d34c4c2344a366889b66162fb7b8ed.json",
+            "identifier": "19d34c4c2344a366889b66162fb7b8ed",
+            "recipe": "Rect program/b2.d3.m255.o0.s2.c0.p3/840e0166",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "rect.vert.spv",
+                "rect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "SMAA blending weights program/b2.d3.m255.o0.s2.c3.p2/9ecfa08d/37x1/0ec2f733/-": {
+            "document": "wz2100.pc.07f50908c542a51811dfa1afdab0c191.json",
+            "identifier": "07f50908c542a51811dfa1afdab0c191",
+            "recipe": "SMAA blending weights program/b2.d3.m255.o0.s2.c3.p2/9ecfa08d",
+            "renderPassClass": "37x1/0ec2f733",
+            "shaderFiles": [
+                "smaa_weights.vert.spv",
+                "smaa_weights.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "SMAA edge detection program/b2.d3.m255.o0.s2.c3.p2/504573e8/16x1/0ec2f733/-": {
+            "document": "wz2100.pc.9a71c31188d654aa48aa2468107dabeb.json",
+            "identifier": "9a71c31188d654aa48aa2468107dabeb",
+            "recipe": "SMAA edge detection program/b2.d3.m255.o0.s2.c3.p2/504573e8",
+            "renderPassClass": "16x1/0ec2f733",
+            "shaderFiles": [
+                "smaa_edges.vert.spv",
+                "smaa_edges.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "SMAA neighborhood blending program/b2.d3.m255.o0.s2.c3.p2/1092432a/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.e1ab4da0adbcb15535e4ab8107aa76e2.json",
+            "identifier": "e1ab4da0adbcb15535e4ab8107aa76e2",
+            "recipe": "SMAA neighborhood blending program/b2.d3.m255.o0.s2.c3.p2/1092432a",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "smaa_blend.vert.spv",
+                "smaa_blend.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "SSAO blur program/b2.d3.m255.o0.s2.c3.p2/fef10cae/9x1/0ec2f733/-": {
+            "document": "wz2100.pc.50e023e428759b8568d2d1cccd2788ee.json",
+            "identifier": "50e023e428759b8568d2d1cccd2788ee",
+            "recipe": "SSAO blur program/b2.d3.m255.o0.s2.c3.p2/fef10cae",
+            "renderPassClass": "9x1/0ec2f733",
+            "shaderFiles": [
+                "postprocess_fullscreen.vert.spv",
+                "ssao_blur.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "SSAO generate program/b2.d3.m255.o0.s2.c3.p2/4b1265e8/9x1/0ec2f733/-": {
+            "document": "wz2100.pc.baa122e92faabe0da6076454c1d5edb2.json",
+            "identifier": "baa122e92faabe0da6076454c1d5edb2",
+            "recipe": "SSAO generate program/b2.d3.m255.o0.s2.c3.p2/4b1265e8",
+            "renderPassClass": "9x1/0ec2f733",
+            "shaderFiles": [
+                "postprocess_fullscreen.vert.spv",
+                "ssao_generate.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Scene compose SSAO program/b2.d3.m255.o0.s2.c3.p2/b070d709/64x1/0ec2f733/-": {
+            "document": "wz2100.pc.9361777256200bc57490dbdd49c652be.json",
+            "identifier": "9361777256200bc57490dbdd49c652be",
+            "recipe": "Scene compose SSAO program/b2.d3.m255.o0.s2.c3.p2/b070d709",
+            "renderPassClass": "64x1/0ec2f733",
+            "shaderFiles": [
+                "postprocess_fullscreen.vert.spv",
+                "scene_compose_ssao.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Scene fog program/b2.d3.m255.o0.s2.c3.p2/fef10cae/64x1/1c432c08/-": {
+            "document": "wz2100.pc.7e0923f574d2b3c2344a4068363cf787.json",
+            "identifier": "7e0923f574d2b3c2344a4068363cf787",
+            "recipe": "Scene fog program/b2.d3.m255.o0.s2.c3.p2/fef10cae",
+            "renderPassClass": "64x1/1c432c08",
+            "shaderFiles": [
+                "postprocess_fullscreen.vert.spv",
+                "scene_fog.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Text program/b5.d3.m255.o0.s2.c3.p3/5e411fa7/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.0b9f67819839f12b06e2cca195c41930.json",
+            "identifier": "0b9f67819839f12b06e2cca195c41930",
+            "recipe": "Text program/b5.d3.m255.o0.s2.c3.p3/5e411fa7",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "rect.vert.spv",
+                "text.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Textured rect program/b0.d3.m255.o0.s2.c0.p3/5e411fa7/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.257b99082ef0aaf1b034503fe1ef4388.json",
+            "identifier": "257b99082ef0aaf1b034503fe1ef4388",
+            "recipe": "Textured rect program/b0.d3.m255.o0.s2.c0.p3/5e411fa7",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "rect.vert.spv",
+                "texturedrect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "construction line program/b1.d0.m255.o0.s2.c0.p3/3984b2ec/64x1.126x1/0ba7285e/-": {
+            "document": "wz2100.pc.bc0e6450b455af7810f856d331d962b5.json",
+            "identifier": "bc0e6450b455af7810f856d331d962b5",
+            "recipe": "construction line program/b1.d0.m255.o0.s2.c0.p3/3984b2ec",
+            "renderPassClass": "64x1.126x1/0ba7285e",
+            "shaderFiles": [
+                "construction_line.vert.spv",
+                "construction_line.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "gfx_color program/b0.d3.m255.o0.s2.c0.p1/15d10d4e/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.1bcefae5f60eadb997f8544bc4e8b620.json",
+            "identifier": "1bcefae5f60eadb997f8544bc4e8b620",
+            "recipe": "gfx_color program/b0.d3.m255.o0.s2.c0.p1/15d10d4e",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "gfx_color.vert.spv",
+                "gfx.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "gfx_color program/b0.d3.m255.o0.s2.c0.p3/15d10d4e/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.6c3c3422815dbea7ed2350072d0f49d6.json",
+            "identifier": "6c3c3422815dbea7ed2350072d0f49d6",
+            "recipe": "gfx_color program/b0.d3.m255.o0.s2.c0.p3/15d10d4e",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "gfx_color.vert.spv",
+                "gfx.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "gfx_text program/b0.d3.m255.o0.s2.c0.p3/db0f1867/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.a6ccff0e6ab45e3397779f32741c3648.json",
+            "identifier": "a6ccff0e6ab45e3397779f32741c3648",
+            "recipe": "gfx_text program/b0.d3.m255.o0.s2.c0.p3/db0f1867",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "gfx_text.vert.spv",
+                "texturedrect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "gfx_text program/b2.d3.m255.o0.s2.c0.p3/db0f1867/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.5320ee4aed5e7045ac0859048a51520e.json",
+            "identifier": "5320ee4aed5e7045ac0859048a51520e",
+            "recipe": "gfx_text program/b2.d3.m255.o0.s2.c0.p3/db0f1867",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "gfx_text.vert.spv",
+                "texturedrect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "line program/b0.d3.m255.o0.s2.c0.p0/840e0166/64x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.6f4dfb6cc528a2e76ab0df1be0fc1cc4.json",
+            "identifier": "6f4dfb6cc528a2e76ab0df1be0fc1cc4",
+            "recipe": "line program/b0.d3.m255.o0.s2.c0.p0/840e0166",
+            "renderPassClass": "64x1.130x1/a846c127",
+            "shaderFiles": [
+                "line.vert.spv",
+                "rect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "skybox program/b0.d1.m255.o0.s2.c0.p2/896ccd87/64x4.130x4.64x1/0695a0d0/-": {
+            "document": "wz2100.pc.c9b5b44671bb65715bbe99da39654c2c.json",
+            "identifier": "c9b5b44671bb65715bbe99da39654c2c",
+            "recipe": "skybox program/b0.d1.m255.o0.s2.c0.p2/896ccd87",
+            "renderPassClass": "64x4.130x4.64x1/0695a0d0",
+            "shaderFiles": [
+                "skybox.vert.spv",
+                "skybox.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "terrain decals program/b2.d1.m255.o0.s2.c0.p2/1211f267/64x4.130x4.64x1/0695a0d0/m1.f5.c3": {
+            "document": "wz2100.pc.41401b1776ff5648f755048ad4e1daef.json",
+            "identifier": "41401b1776ff5648f755048ad4e1daef",
+            "recipe": "terrain decals program/b2.d1.m255.o0.s2.c0.p2/1211f267",
+            "renderPassClass": "64x4.130x4.64x1/0695a0d0",
+            "shaderFiles": [
+                "terrain_combined.vert.spv",
+                "terrain_combined_medium.frag.spv"
+            ],
+            "specialization": "m1.f5.c3"
+        },
+        "terrain_depth program/b2.d0.m0.o1.s2.c0.p2/2df6dd58/64x4.130x4.64x1/0695a0d0/-": {
+            "document": "wz2100.pc.c2b6a8efb3866d4f894ab9b2b6822b38.json",
+            "identifier": "c2b6a8efb3866d4f894ab9b2b6822b38",
+            "recipe": "terrain_depth program/b2.d0.m0.o1.s2.c0.p2/2df6dd58",
+            "renderPassClass": "64x4.130x4.64x1/0695a0d0",
+            "shaderFiles": [
+                "terrain_depth.vert.spv",
+                "terraindepth.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "terrain_depth_prepass program/b2.d0.m255.o1.s2.c0.p2/9602f7b5/37x1.126x1/e66d4f6f/-": {
+            "document": "wz2100.pc.38aa29fb1f8783e20264ee9e22762833.json",
+            "identifier": "38aa29fb1f8783e20264ee9e22762833",
+            "recipe": "terrain_depth_prepass program/b2.d0.m255.o1.s2.c0.p2/9602f7b5",
+            "renderPassClass": "37x1.126x1/e66d4f6f",
+            "shaderFiles": [
+                "terrain_depth_prepass.vert.spv",
+                "terrain_depth_prepass.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "terrain_depthmap program/b2.d0.m0.o0.s2.c3.p2/2df6dd58/126x1/25837de1/-": {
+            "document": "wz2100.pc.4634401ca5fa29a4bb36d3da88b81ead.json",
+            "identifier": "4634401ca5fa29a4bb36d3da88b81ead",
+            "recipe": "terrain_depthmap program/b2.d0.m0.o0.s2.c3.p2/2df6dd58",
+            "renderPassClass": "126x1/25837de1",
+            "shaderFiles": [
+                "terrain_depth_only.vert.spv",
+                "terrain_depth_only.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "water program/b3.d1.m255.o0.s2.c0.p2/ef7f18d3/64x4.130x4.64x1/0695a0d0/-": {
+            "document": "wz2100.pc.ec4465573ea0e3532e80eb748e340b5c.json",
+            "identifier": "ec4465573ea0e3532e80eb748e340b5c",
+            "recipe": "water program/b3.d1.m255.o0.s2.c0.p2/ef7f18d3",
+            "renderPassClass": "64x4.130x4.64x1/0695a0d0",
+            "shaderFiles": [
+                "terrain_water.vert.spv",
+                "water.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "water_depth_prepass program/b2.d0.m255.o0.s2.c0.p2/65ae14b3/37x1.126x1/e66d4f6f/-": {
+            "document": "wz2100.pc.c4b03e67fdc964ad83b6100442816024.json",
+            "identifier": "c4b03e67fdc964ad83b6100442816024",
+            "recipe": "water_depth_prepass program/b2.d0.m255.o0.s2.c0.p2/65ae14b3",
+            "renderPassClass": "37x1.126x1/e66d4f6f",
+            "shaderFiles": [
+                "water_depth_prepass.vert.spv",
+                "water_depth_prepass.frag.spv"
+            ],
+            "specialization": "-"
+        }
+    }
+}

@@ -1883,7 +1883,9 @@ VkPSO::VkPSO(vk::Device _dev,
 				.setBinding(static_cast<uint32_t>(texture.id))
 				.setDescriptorCount(1)
 				.setDescriptorType(vk::DescriptorType::eCombinedImageSampler)
-				.setPImmutableSamplers(&samplers.back())
+				// Not immutable: bind_textures() writes the sampler with the image. Vulkan SC can limit
+				// immutable samplers (maxImmutableSamplersPerDescriptorSetLayout), and the pipeline JSON
+				// is simpler without them.
 				.setStageFlags(textureStageFlags(texture.stage))
 		);
 	}
@@ -2084,6 +2086,39 @@ VkPSO::VkPSO(vk::Device _dev,
 			break;
 		default:
 			WZ_THROW_VK_RESULT_EXCEPTION(result.result, "createGraphicsPipeline");
+	}
+
+	if (root->pipelineJsonExport)
+	{
+		// The specialization values are part of the name: each combination is its own Vulkan SC pipeline.
+		std::string specialization;
+		const auto appendValue = [&specialization](const char* prefix, uint32_t value) {
+			specialization += (specialization.empty() ? "" : ".") + std::string(prefix) + std::to_string(value);
+		};
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_mode) { appendValue("m", specValues.shadowMode); }
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_filter_size) { appendValue("f", specValues.shadowFilterSize); }
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_cascades) { appendValue("c", specValues.shadowCascadesCount); }
+		if (shaderInfo.spec_constants & gfx_api::spec_point_light_enabled) { appendValue("l", specValues.isPointLightPerPixelEnabled ? 1 : 0); }
+		if (specialization.empty())
+		{
+			specialization = "-";
+		}
+
+		// In the order get_stages() puts the stages in.
+		std::vector<std::string> shaderFiles;
+		for (const auto kind : {gfx_api::shader_stage_kind::vertex, gfx_api::shader_stage_kind::tess_control, gfx_api::shader_stage_kind::tess_eval, gfx_api::shader_stage_kind::fragment})
+		{
+			const gfx_api::shader_stage_file* stage = gfx_api::find_stage(shaderInfo, kind);
+			if (stage != nullptr && stage->basename != nullptr)
+			{
+				shaderFiles.push_back(std::string(stage->basename) + ".spv");
+			}
+		}
+
+		const std::string recipe = gfx_api::vk::pipelineRecipeName(createInfo);
+		const std::string renderPassClass = root->renderPassClassNameFor(rp);
+		root->pipelineJsonExport->recordGraphicsPipeline(recipe + "/" + renderPassClass + "/" + specialization,
+			recipe, renderPassClass, specialization, static_cast<const VkGraphicsPipelineCreateInfo&>(pso), shaderFiles);
 	}
 }
 
@@ -2951,6 +2986,19 @@ VkRoot::VkRoot(bool _debug)
 VkRoot::~VkRoot()
 {
 	// nothing, currently
+}
+
+const std::string& VkRoot::renderPassClassNameFor(vk::RenderPass renderPass) const
+{
+	static const std::string unknown = "unknown";
+	for (const auto& details : renderPasses)
+	{
+		if (details.rp == renderPass)
+		{
+			return details.className;
+		}
+	}
+	return unknown;
 }
 
 const VkRoot::RenderPassDetails& VkRoot::currentRenderPass()
@@ -4005,6 +4053,13 @@ bool VkRoot::shouldDraw()
 
 void VkRoot::shutdown()
 {
+	if (pipelineJsonExport)
+	{
+		pipelineJsonExport->write();
+		sharedPipelineObjects.setPipelineJsonExport(nullptr);
+		pipelineJsonExport.reset();
+	}
+
 	_screenFrameOpen = false;
 	destroySwapchainAndSwapchainSpecificStuff(true);
 	_screenshotReadback.releaseStagingBuffers(vkDynLoader);
@@ -5461,6 +5516,10 @@ bool VkRoot::createLogicalDevice()
 	// Count the objects of each type (before createAllocator() copies the entry points into VMA).
 	gfx_api::vk::installObjectCounters(vkDynLoader);
 
+	// Before any render pass, layout, or pipeline exists, so that the export records all of them.
+	pipelineJsonExport = gfx_api::vk::PipelineJsonExport::createFromEnvironment();
+	sharedPipelineObjects.setPipelineJsonExport(pipelineJsonExport.get());
+
 	return true;
 }
 
@@ -6017,6 +6076,7 @@ void VkRoot::bind_textures(const std::vector<gfx_api::texture_input>& attribute_
 		}
 
 		image_descriptor.emplace_back(vk::DescriptorImageInfo()
+			.setSampler(currentPSO->samplers.at(i))
 			.setImageView(imageView)
 			.setImageLayout(imageLayout));
 		i++;

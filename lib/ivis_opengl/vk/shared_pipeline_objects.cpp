@@ -25,6 +25,7 @@
 #if defined(WZ_VULKAN_ENABLED)
 
 #include "vk/shared_pipeline_objects.h"
+#include "vk/pipeline_json_export.h"
 
 #include "lib/framework/frame.h"
 
@@ -85,11 +86,14 @@ uint64_t handleKey(Handle handle)
 	auto it = _descriptorSetLayouts.find(key);
 	if (it == _descriptorSetLayouts.end())
 	{
-		const auto layout = dev.createDescriptorSetLayout(
-			::vk::DescriptorSetLayoutCreateInfo()
-				.setBindingCount(static_cast<uint32_t>(bindings.size()))
-				.setPBindings(bindings.data())
-			, nullptr, vkDynLoader);
+		const auto createInfo = ::vk::DescriptorSetLayoutCreateInfo()
+			.setBindingCount(static_cast<uint32_t>(bindings.size()))
+			.setPBindings(bindings.data());
+		const auto layout = dev.createDescriptorSetLayout(createInfo, nullptr, vkDynLoader);
+		if (_pipelineJsonExport)
+		{
+			_pipelineJsonExport->recordDescriptorSetLayout(static_cast<const VkDescriptorSetLayoutCreateInfo&>(createInfo), static_cast<VkDescriptorSetLayout>(layout));
+		}
 		it = _descriptorSetLayouts.emplace(std::move(key), layout).first;
 	}
 	return it->second;
@@ -108,11 +112,14 @@ uint64_t handleKey(Handle handle)
 	auto it = _pipelineLayouts.find(key);
 	if (it == _pipelineLayouts.end())
 	{
-		const auto layout = dev.createPipelineLayout(
-			::vk::PipelineLayoutCreateInfo()
-				.setPSetLayouts(setLayouts.data())
-				.setSetLayoutCount(static_cast<uint32_t>(setLayouts.size()))
-			, nullptr, vkDynLoader);
+		const auto createInfo = ::vk::PipelineLayoutCreateInfo()
+			.setPSetLayouts(setLayouts.data())
+			.setSetLayoutCount(static_cast<uint32_t>(setLayouts.size()));
+		const auto layout = dev.createPipelineLayout(createInfo, nullptr, vkDynLoader);
+		if (_pipelineJsonExport)
+		{
+			_pipelineJsonExport->recordPipelineLayout(static_cast<const VkPipelineLayoutCreateInfo&>(createInfo), static_cast<VkPipelineLayout>(layout));
+		}
 		it = _pipelineLayouts.emplace(std::move(key), layout).first;
 	}
 	return it->second;
