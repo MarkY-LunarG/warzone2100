@@ -29,6 +29,7 @@
 #include "gfx_api_vk.h"
 #include "vk/layout_key_builder.h"
 #include "vk/layout_sync.h"
+#include "vk/pipeline_names.h"
 
 #include <array>
 
@@ -395,6 +396,18 @@ size_t RenderPassLayoutCache::getOrCreate(const PassLayoutKey& key)
 	renderPassDetails.rp_compat_info = std::make_shared<VkhRenderPassCompat>(createInfo);
 	renderPassDetails.rp = _root.dev.createRenderPass(createInfo, nullptr, _root.vkDynLoader);
 	renderPassDetails.msaaSamples = hasMsaaResolve ? _root.msaaSamples : ::vk::SampleCountFlagBits::e1;
+	renderPassDetails.psoSlot = renderPassId;
+	renderPassDetails.className = renderPassClassName(createInfo);
+	for (size_t otherId = 0; otherId < renderPassId; ++otherId)
+	{
+		const auto& other = _root.renderPasses[otherId];
+		if (other.rp && other.psoSlot == otherId && other.msaaSamples == renderPassDetails.msaaSamples
+			&& other.rp_compat_info->isCompatibleWith(*renderPassDetails.rp_compat_info))
+		{
+			renderPassDetails.psoSlot = otherId;
+			break;
+		}
+	}
 
 	_keys.push_back(key);
 	_root.ensureRenderPassPSOCapacity(_root.renderPasses.size());
