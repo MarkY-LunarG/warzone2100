@@ -65,6 +65,7 @@
 #include "vk/layout_translation.h"
 #include "vk/object_counters.h"
 #include "vk/pipeline_names.h"
+#include "vk/vksc_bridge.h"
 #include "vk/transfer_recorder.h"
 #include "vk/transfer_recording_context.h"
 #include "lib/framework/physfs_ext.h"
@@ -849,7 +850,17 @@ void BlockBufferAllocator::clean()
 
 // MARK: perFrameResources_t
 
+#if defined(WZ_VULKANSC)
+// Vulkan SC reserves every descriptor set at device creation, and a pool cannot be destroyed. The desktop
+// build measured at most 96 combined image sampler sets and 32 uniform buffer sets in one frame.
+constexpr uint32_t vulkanSCDescriptorPoolMaxSets = 1024;
+constexpr uint32_t descriptorPoolMaxSetsDefault = vulkanSCDescriptorPoolMaxSets;
+// Vulkan SC reserves command buffer memory when a command pool is made (VkCommandPoolMemoryReservationCreateInfo)
+constexpr uint64_t vulkanSCDrawCommandBufferReservedSize = 32 * 1024 * 1024;
+constexpr uint64_t vulkanSCCopyCommandBufferReservedSize = 8 * 1024 * 1024;
+#else
 constexpr uint32_t descriptorPoolMaxSetsDefault = 10000;
+#endif
 constexpr uint32_t descriptorPoolSizeDescriptorCountDefault = 10000;
 
 perFrameResources_t::perFrameResources_t(vk::Device& _dev, const VmaAllocator& allocator, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
@@ -864,16 +875,19 @@ perFrameResources_t::perFrameResources_t(vk::Device& _dev, const VmaAllocator& a
 	combinedImageSamplerDescriptorPools.push_back(createNewDescriptorPool(vk::DescriptorType::eCombinedImageSampler, descriptorPoolMaxSetsDefault, descriptorPoolSizeDescriptorCountDefault));
 	uniformDynamicDescriptorPools.push_back(createNewDescriptorPool(vk::DescriptorType::eUniformBufferDynamic, descriptorPoolMaxSetsDefault, descriptorPoolSizeDescriptorCountDefault));
 
-	pool = dev.createCommandPool(
-		vk::CommandPoolCreateInfo()
-		.setQueueFamilyIndex(graphicsQueueFamilyIndex)
-		, nullptr, *pVkDynLoader
-	);
-	copyPool = dev.createCommandPool(
-		vk::CommandPoolCreateInfo()
-		.setQueueFamilyIndex(graphicsQueueFamilyIndex)
-		, nullptr, *pVkDynLoader
-	);
+	auto poolCreateInfo = vk::CommandPoolCreateInfo()
+		.setQueueFamilyIndex(graphicsQueueFamilyIndex);
+	auto copyPoolCreateInfo = vk::CommandPoolCreateInfo()
+		.setQueueFamilyIndex(graphicsQueueFamilyIndex);
+#if defined(WZ_VULKANSC)
+	// The draw pool also lends setupSwapchainImages() one command buffer
+	gfx_api::vk::sc::CommandPoolChainStorage poolChainStorage;
+	gfx_api::vk::sc::CommandPoolChainStorage copyPoolChainStorage;
+	poolCreateInfo.setPNext(gfx_api::vk::sc::commandPoolCreateInfoChain(poolChainStorage, 2, vulkanSCDrawCommandBufferReservedSize, nullptr));
+	copyPoolCreateInfo.setPNext(gfx_api::vk::sc::commandPoolCreateInfoChain(copyPoolChainStorage, 1, vulkanSCCopyCommandBufferReservedSize, nullptr));
+#endif
+	pool = dev.createCommandPool(poolCreateInfo, nullptr, *pVkDynLoader);
+	copyPool = dev.createCommandPool(copyPoolCreateInfo, nullptr, *pVkDynLoader);
 	cmdDraw = dev.allocateCommandBuffers(
 		vk::CommandBufferAllocateInfo()
 		.setCommandPool(pool)
@@ -985,6 +999,10 @@ vk::DescriptorPool perFrameResources_t::getDescriptorPool(uint32_t numSets, vk::
 		{
 			// No more existing pools - need to create a new one
 			debug(LOG_INFO, "[%p] Creating new [%zu] descriptor pool of type: %s", (void*)this, pPools->currPool + 1, vk::to_string(descriptorType).c_str());
+#if defined(WZ_VULKANSC)
+			debug(LOG_ERROR, "Vulkan SC: a frame needs more than %" PRIu32 " descriptor sets of type %s, which the device did not reserve",
+				descriptorPoolMaxSetsDefault, vk::to_string(descriptorType).c_str());
+#endif
 			pPools->push_back(createNewDescriptorPool(descriptorType, descriptorPoolMaxSetsDefault, descriptorPoolSizeDescriptorCountDefault));
 			pPools->nextPool();
 		}
@@ -3015,6 +3033,17 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 		psoID = existingPSOId->psoID;
 	}
 
+	if (!canCreatePipelines())
+	{
+		// Register the recipe without building it; bind_pipeline() then skips its draws
+		if (!psoID.has_value())
+		{
+			createdPipelines.emplace_back(createInfo, gfx_api::vk::pipelineRecipeName(createInfo), renderPasses.size());
+			psoID = createdPipelines.size() - 1;
+		}
+		return new VkPSOId(psoID.value(), false);
+	}
+
 	// build a pipeline, return an indirect VkPSOId (to enable rebuilding pipelines if needed)
 	VkPSO* pipeline = nullptr;
 	try {
@@ -4129,6 +4158,9 @@ void VkRoot::shutdown()
 	{
 		// Everything the device made is destroyed by now, so an object that is still live was leaked.
 		gfx_api::vk::reportObjectCounters((validationLayer) ? LOG_INFO : LOG_3D);
+#if defined(WZ_VULKANSC)
+		gfx_api::vk::sc::reportFaults(static_cast<VkDevice>(dev), reinterpret_cast<void*>(vkDynLoader.vkGetDeviceProcAddr(static_cast<VkDevice>(dev), "vkGetFaultData")), "shutdown");
+#endif
 		dev.destroy(nullptr, vkDynLoader);
 		dev = vk::Device();
 	}
@@ -4321,6 +4353,14 @@ void VkRoot::destroySwapchainAndSwapchainSpecificStuff(bool doDestroySwapchain)
 void VkRoot::handleSurfaceLost()
 {
 	debug(LOG_3D, "handleSurfaceLost()");
+#if defined(WZ_VULKANSC)
+	// The display surface outlives the swapchain, which cannot be replaced
+	if (swapchain)
+	{
+		debug(LOG_FATAL, "Vulkan SC: the display surface was lost");
+		WZ_THROW_VK_RESULT_EXCEPTION(vk::Result::eErrorSurfaceLostKHR, "Vulkan SC: surface lost");
+	}
+#endif
 
 	destroySwapchainAndSwapchainSpecificStuff(true);
 
@@ -4385,6 +4425,15 @@ void VkRoot::handleSurfaceLost()
 // throws a vk::SystemError on an unrecoverable error (like OOM)
 void VkRoot::createNewSwapchainAndSwapchainSpecificStuff(const vk::Result& reason)
 {
+#if defined(WZ_VULKANSC)
+	// Vulkan SC presents to a display mode that does not change, and has no vkDestroySwapchainKHR:
+	// the one swapchain is never replaced.
+	if (swapchain)
+	{
+		debug(LOG_FATAL, "Vulkan SC: the swapchain cannot be made again (%s)", to_string(reason).c_str());
+		WZ_THROW_VK_RESULT_EXCEPTION(reason, "Vulkan SC: swapchain recreate");
+	}
+#endif
 	// ensure we don't end up in endless recursion because of failures
 	if (errorHandlingDepth.size() > maxErrorHandlingDepth)
 	{
@@ -4935,16 +4984,30 @@ static uint32_t getVKSuggestedDefaultDepthBufferResolution(const vk::PhysicalDev
 	return 2048;
 }
 
+#if defined(WZ_VULKANSC)
+// Vulkan SC 1.0 has the core API of Vulkan 1.2. Its version numbers carry the API variant (1) in the
+// top bits, which the VK_VERSION_* comparisons would read as a very large Vulkan version.
+static const uint32_t vulkanSCCoreVulkanVersion = VK_API_VERSION_1_2;
+#endif
+
 bool VkRoot::canUseVulkanInstanceAPI(uint32_t minVulkanAPICoreVersion) const
 {
 	ASSERT(inst, "Instance is null");
+#if defined(WZ_VULKANSC)
+	return VK_VERSION_GREATER_THAN_OR_EQUAL(vulkanSCCoreVulkanVersion, minVulkanAPICoreVersion);
+#else
 	return VK_VERSION_GREATER_THAN_OR_EQUAL(appInfo.apiVersion, minVulkanAPICoreVersion);
+#endif
 }
 
 bool VkRoot::canUseVulkanDeviceAPI(uint32_t minVulkanAPICoreVersion) const
 {
 	ASSERT(physicalDevice, "Physical device is null");
+#if defined(WZ_VULKANSC)
+	return VK_VERSION_GREATER_THAN_OR_EQUAL(vulkanSCCoreVulkanVersion, minVulkanAPICoreVersion);
+#else
 	return VK_VERSION_GREATER_THAN_OR_EQUAL(appInfo.apiVersion, minVulkanAPICoreVersion) && VK_VERSION_GREATER_THAN_OR_EQUAL(physDeviceProps.apiVersion, minVulkanAPICoreVersion);
+#endif
 }
 
 bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t antialiasing, swap_interval_mode requestedSwapMode, optional<float> /*mipLodBias*/, uint32_t _depthMapResolution)
@@ -4996,6 +5059,9 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 			(uint32_t)VK_MAKE_VERSION(VK_VERSION_MAJOR(instanceVersion), VK_VERSION_MINOR(instanceVersion), 0),
 			maxRequestableInstanceVulkanVersion
 	); // cap requestedInstanceApiVersion to maxRequestableInstanceVulkanVersion
+#if defined(WZ_VULKANSC)
+	requestedInstanceApiVersion = gfx_api::vk::sc::apiVersion();
+#endif
 
 	try {
 		debugInfo.Output_GlobalInstanceExtensions(_vkGetInstanceProcAddr);
@@ -5431,6 +5497,104 @@ bool VkRoot::getQueueFamiliesInfo()
 	return true;
 }
 
+#if defined(WZ_VULKANSC)
+
+// The most objects of each type that are alive at one time (VkDeviceObjectReservationCreateInfo).
+// Provisional (phase 1 of the Vulkan SC plan): about twice the peaks the desktop build measured
+// (gfx_api::vk::reportObjectCounters) with every graphics effect on. Memory, command pools,
+// descriptor pools, query pools, and the swapchain are never freed in Vulkan SC, so for them the
+// count is the total ever made.
+gfx_api::vk::sc::DeviceReservation VkRoot::vulkanSCDeviceReservation() const
+{
+	gfx_api::vk::sc::DeviceReservation r;
+	r.semaphoreRequestCount = 32;
+	r.commandBufferRequestCount = 16;
+	r.fenceRequestCount = 16;
+	r.deviceMemoryRequestCount = 512;
+	r.bufferRequestCount = 8192;
+	r.imageRequestCount = 1024;
+	r.queryPoolRequestCount = 1;
+	r.imageViewRequestCount = 1024;
+	r.layeredImageViewRequestCount = 16;
+	r.pipelineCacheRequestCount = 1;
+	r.pipelineLayoutRequestCount = 32;
+	r.renderPassRequestCount = 32;
+	r.graphicsPipelineRequestCount = 256;
+	r.descriptorSetLayoutRequestCount = 32;
+	r.samplerRequestCount = 16;
+	r.descriptorPoolRequestCount = 2 * MAX_FRAMES_IN_FLIGHT;
+	r.descriptorSetRequestCount = 2 * MAX_FRAMES_IN_FLIGHT * vulkanSCDescriptorPoolMaxSets;
+	r.framebufferRequestCount = 64;
+	r.commandPoolRequestCount = 2 * MAX_FRAMES_IN_FLIGHT;
+	r.surfaceRequestCount = 1;
+	r.swapchainRequestCount = 1;
+	r.displayModeRequestCount = 1;
+	r.subpassDescriptionRequestCount = 32;
+	r.attachmentDescriptionRequestCount = 96;
+	r.descriptorSetLayoutBindingRequestCount = 128;
+	r.descriptorSetLayoutBindingLimit = 32;
+	// A view of an image of 16384 texels has at most 15 mip levels
+	r.maxImageViewMipLevels = 15;
+	r.maxImageViewArrayLayers = 256;
+	r.maxLayeredImageViewMipLevels = 15;
+	r.maxTimestampQueriesPerPool = 2 * GPU_TIMING_SLOTS;
+	return r;
+}
+
+// Vulkan SC has no vkFreeMemory, vkDestroyCommandPool, vkDestroyDescriptorPool, vkDestroySwapchainKHR,
+// vkDestroyQueryPool, vkCreateShaderModule, or vkDestroyShaderModule: these objects live until the device
+// is destroyed, and pipelines come from the pipeline cache. The backend (and VMA) call the destroy
+// entry points through vkDynLoader, so in the Vulkan SC build they are no-ops there, rather than a
+// guard at each call site.
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepMemory(VkDevice, VkDeviceMemory, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepCommandPool(VkDevice, VkCommandPool, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepDescriptorPool(VkDevice, VkDescriptorPool, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepSwapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepQueryPool(VkDevice, VkQueryPool, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepShaderModule(VkDevice, VkShaderModule, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR VkResult VKAPI_CALL vulkanSCNoShaderModules(VkDevice, const VkShaderModuleCreateInfo*, const VkAllocationCallbacks*, VkShaderModule*)
+{
+	debug(LOG_ERROR, "Vulkan SC has no shader modules: pipelines come from the pipeline cache");
+	return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+void VkRoot::installVulkanSCRemovedEntryPoints()
+{
+	ASSERT(vkDynLoader.vkFreeMemory == nullptr, "The Vulkan SC loader has vkFreeMemory?");
+	vkDynLoader.vkFreeMemory = vulkanSCKeepMemory;
+	vkDynLoader.vkDestroyCommandPool = vulkanSCKeepCommandPool;
+	vkDynLoader.vkDestroyDescriptorPool = vulkanSCKeepDescriptorPool;
+	vkDynLoader.vkDestroySwapchainKHR = vulkanSCKeepSwapchain;
+	vkDynLoader.vkDestroyQueryPool = vulkanSCKeepQueryPool;
+	vkDynLoader.vkCreateShaderModule = vulkanSCNoShaderModules;
+	vkDynLoader.vkDestroyShaderModule = vulkanSCKeepShaderModule;
+}
+
+void VkRoot::logVulkanSCProperties()
+{
+	gfx_api::vk::sc::Properties properties;
+	if (!gfx_api::vk::sc::getProperties(static_cast<VkPhysicalDevice>(physicalDevice), reinterpret_cast<void*>(vkDynLoader.vkGetPhysicalDeviceProperties2), properties))
+	{
+		debug(LOG_ERROR, "Vulkan SC: could not read VkPhysicalDeviceVulkanSC10Properties");
+		return;
+	}
+	debug(LOG_INFO, "Vulkan SC properties: commandPoolResetCommandBuffer %d, recycleDescriptorSetMemory %d, recyclePipelineMemory %d, maxRenderPassSubpasses %u, maxDescriptorSetLayoutBindings %u, maxCommandPoolCommandBuffers %u, maxCommandBufferSize %" PRIu64,
+		properties.commandPoolResetCommandBuffer ? 1 : 0, properties.recycleDescriptorSetMemory ? 1 : 0, properties.recyclePipelineMemory ? 1 : 0,
+		properties.maxRenderPassSubpasses, properties.maxDescriptorSetLayoutBindings, properties.maxCommandPoolCommandBuffers, properties.maxCommandBufferSize);
+}
+
+#endif // defined(WZ_VULKANSC)
+
+bool VkRoot::canCreatePipelines() const
+{
+#if defined(WZ_VULKANSC)
+	// Phase 1 of the Vulkan SC plan: there is no pipeline cache yet, so nothing is drawn
+	return false;
+#else
+	return true;
+#endif
+}
+
 bool VkRoot::createLogicalDevice()
 {
 	ASSERT(physicalDevice, "Physical device is null");
@@ -5477,12 +5641,17 @@ bool VkRoot::createLogicalDevice()
 	});
 	debug(LOG_3D, "Using device extensions: %s", deviceExtensionsAsString.c_str());
 
-	const auto deviceCreateInfo = vk::DeviceCreateInfo()
+	auto deviceCreateInfo = vk::DeviceCreateInfo()
 		.setEnabledExtensionCount(static_cast<uint32_t>(enabledDeviceExtensions.size()))
 		.setPpEnabledExtensionNames(enabledDeviceExtensions.data())
 		.setPEnabledFeatures(&enabledFeatures)
 		.setQueueCreateInfoCount(static_cast<uint32_t>(queueCreateInfos.size()))
 		.setPQueueCreateInfos(queueCreateInfos.data());
+#if defined(WZ_VULKANSC)
+	// The fault callback, the Vulkan SC features, and the object reservation
+	gfx_api::vk::sc::DeviceChainStorage vulkanSCChainStorage;
+	deviceCreateInfo.setPNext(gfx_api::vk::sc::deviceCreateInfoChain(vulkanSCChainStorage, vulkanSCDeviceReservation(), nullptr));
+#endif
 
 	try {
 		dev = physicalDevice.createDevice(deviceCreateInfo, nullptr, vkDynLoader);
@@ -5513,6 +5682,11 @@ bool VkRoot::createLogicalDevice()
 	// See: https://stackoverflow.com/a/35504844
 	vkDynLoader.init(static_cast<VkInstance>(inst), vkDynLoader.vkGetInstanceProcAddr, static_cast<VkDevice>(dev), vkDynLoader.vkGetDeviceProcAddr);
 
+#if defined(WZ_VULKANSC)
+	installVulkanSCRemovedEntryPoints();
+	logVulkanSCProperties();
+#endif
+
 	// Count the objects of each type (before createAllocator() copies the entry points into VMA).
 	gfx_api::vk::installObjectCounters(vkDynLoader);
 
@@ -5538,6 +5712,10 @@ bool VkRoot::createAllocator()
 	// so it must be no higher than `VkApplicationInfo::apiVersion` passed to `vkCreateInstance`
 	// and no higher than `VkPhysicalDeviceProperties::apiVersion` found on the physical device used."
 	allocatorInfo.vulkanApiVersion = std::min(instanceCreateInfo.pApplicationInfo->apiVersion, physDeviceProps.apiVersion);
+#if defined(WZ_VULKANSC)
+	// VMA knows only Vulkan versions; Vulkan SC 1.0 has the core API of Vulkan 1.2
+	allocatorInfo.vulkanApiVersion = vulkanSCCoreVulkanVersion;
+#endif
 	debug(LOG_3D, "Using VMA allocator vulkanApiVersion: %s", VkhInfo::vulkan_apiversion_to_string(allocatorInfo.vulkanApiVersion).c_str());
 
 	bool enabled_VK_KHR_get_memory_requirements2 = std::find_if(enabledDeviceExtensions.begin(), enabledDeviceExtensions.end(),
@@ -5628,6 +5806,10 @@ void VkRoot::getQueues()
 
 void VkRoot::draw(const std::size_t& offset, const std::size_t& count, const gfx_api::primitive_type&)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, renderGraphExecuting() && hasActivePass,
 		"draw() called outside render graph record callback");
 
@@ -5638,6 +5820,10 @@ void VkRoot::draw(const std::size_t& offset, const std::size_t& count, const gfx
 
 void VkRoot::draw_instanced(const std::size_t& offset, const std::size_t &count, const gfx_api::primitive_type &primitive, std::size_t instance_count)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT(offset <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "offset (%zu) exceeds uint32_t max", offset);
 	ASSERT(count <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "count (%zu) exceeds uint32_t max", count);
 	buffering_mechanism::get_current_resources().currentDrawCmdBuffer()->draw(static_cast<uint32_t>(count), static_cast<uint32_t>(instance_count), static_cast<uint32_t>(offset), 0, vkDynLoader);
@@ -5645,6 +5831,10 @@ void VkRoot::draw_instanced(const std::size_t& offset, const std::size_t &count,
 
 void VkRoot::draw_elements(const std::size_t& offset, const std::size_t& count, const gfx_api::primitive_type&, const gfx_api::index_type&)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, renderGraphExecuting() && hasActivePass,
 		"draw_elements() called outside render graph record callback");
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
@@ -5655,6 +5845,10 @@ void VkRoot::draw_elements(const std::size_t& offset, const std::size_t& count, 
 
 void VkRoot::draw_elements_instanced(const std::size_t& offset, const std::size_t &count, const gfx_api::primitive_type &primitive, const gfx_api::index_type& index, std::size_t instance_count)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(offset <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "offset (%zu) exceeds uint32_t max", offset);
 	ASSERT(count <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "count (%zu) exceeds uint32_t max", count);
@@ -5663,6 +5857,10 @@ void VkRoot::draw_elements_instanced(const std::size_t& offset, const std::size_
 
 void VkRoot::bind_vertex_buffers(const std::size_t& first, const std::vector<std::tuple<gfx_api::buffer*, std::size_t>>& vertex_buffers_offset)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	std::vector<vk::Buffer> buffers;
 	std::vector<VkDeviceSize> offsets;
@@ -5692,6 +5890,10 @@ void VkRoot::disable_all_vertex_buffers()
 
 void VkRoot::bind_streamed_vertex_buffers(const void* data, const std::size_t size)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(size > 0, "bind_streamed_vertex_buffers called with size 0");
 	ASSERT(size <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "size (%zu) exceeds uint32_t max", size);
@@ -5970,6 +6172,10 @@ vk::IndexType VkRoot::to_vk(const gfx_api::index_type& index)
 
 void VkRoot::bind_index_buffer(gfx_api::buffer& index_buffer, const gfx_api::index_type& index)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	auto& casted_buf = static_cast<VkBuf&>(index_buffer);
 	ASSERT(casted_buf.usage == gfx_api::buffer::usage::index_buffer, "Passed gfx_api::buffer is not an index buffer");
@@ -5983,6 +6189,10 @@ void VkRoot::unbind_index_buffer(gfx_api::buffer&)
 
 void VkRoot::bind_textures(const std::vector<gfx_api::texture_input>& attribute_descriptions, const std::vector<gfx_api::abstract_texture*>& textures)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(textures.size() <= attribute_descriptions.size(), "Received more textures than expected");
 	ASSERT(textures.size() <= std::numeric_limits<uint32_t>::max(), "Too many textures: %zu", textures.size());
@@ -6135,6 +6345,10 @@ void VkRoot::set_constants(const void* buffer, const std::size_t& size)
 
 void VkRoot::set_uniforms_set(const size_t& uniform_set, const void* buffer, size_t size)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(size <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "size (%zu) exceeds uint32_t max", size);
 	const auto stagingMemory = buffering_mechanism::get_current_resources().uniformBufferAllocator.alloc(static_cast<uint32_t>(size), physDeviceProps.limits.minUniformBufferOffsetAlignment);
@@ -6226,6 +6440,10 @@ gfx_api::frame_uniform_allocation VkRoot::upload_frame_uniform_raw(const void* d
 
 void VkRoot::set_frame_uniform_at(size_t slot, const gfx_api::frame_uniform_allocation& allocation, std::type_index type)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT_OR_RETURN(, slot < currentPSO->cbuffer_set_layout.size(), "Uniform set %zu is out of range (have %zu)", slot, currentPSO->cbuffer_set_layout.size());
 	ASSERT(slot >= currentPSO->uniformBlockTypes.size() || currentPSO->uniformBlockTypes[slot] == type,
@@ -6255,6 +6473,10 @@ void VkRoot::set_frame_uniform_at(size_t slot, const gfx_api::frame_uniform_allo
 
 void VkRoot::set_uniforms(const size_t& first, const std::vector<std::tuple<const void*, size_t>>& uniform_blocks)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	for (size_t i = 0, e = uniform_blocks.size(); i < e && (first + i) < currentPSO->cbuffer_set_layout.size(); ++i)
 	{
@@ -6277,6 +6499,13 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 	auto& pipelineInfo = createdPipelines[newPSOId->psoID];
 	auto& renderPass = renderPasses[currentRenderPassId];
 	VkPSO* newPSO = pipelineInfo.renderPassPSO[renderPass.psoSlot];
+	if (!newPSO && !canCreatePipelines())
+	{
+		skipDrawsWithoutPipeline = true;
+		currentPSO = nullptr;
+		return;
+	}
+	skipDrawsWithoutPipeline = false;
 	if (!newPSO)
 	{
 		// Must build this pipeline for a render pass that is not compatible with any it was built for

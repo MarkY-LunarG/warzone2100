@@ -41,6 +41,7 @@
 #include "vk/screenshot_readback.h"
 #include "vk/pipeline_json_export.h"
 #include "vk/shared_pipeline_objects.h"
+#include "vk/vksc_bridge.h"
 #include "vk/warm_entry.h"
 #include <algorithm>
 #include <sstream>
@@ -824,6 +825,15 @@ struct VkRoot final : gfx_api::context
 	std::unique_ptr<gfx_api::vk::PipelineJsonExport> pipelineJsonExport;
 	// The compatibility class name of a render pass (RenderPassDetails::className).
 	const std::string& renderPassClassNameFor(vk::RenderPass renderPass) const;
+	// False in a Vulkan SC build without a pipeline cache: recipes are registered but not built, and
+	// draws are skipped (skipDrawsWithoutPipeline).
+	bool canCreatePipelines() const;
+	bool skipDrawsWithoutPipeline = false;
+#if defined(WZ_VULKANSC)
+	gfx_api::vk::sc::DeviceReservation vulkanSCDeviceReservation() const;
+	void installVulkanSCRemovedEntryPoints();
+	void logVulkanSCProperties();
+#endif
 
 	// default textures
 	VkTexture* pDefaultTexture = nullptr;

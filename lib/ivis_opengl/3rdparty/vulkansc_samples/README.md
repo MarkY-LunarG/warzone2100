@@ -20,8 +20,9 @@ and these files write the documents.
 
 1. `VulkanSCPipelineExport.h` and `VulkanSCEnumStrings.h` include `vulkansc_compat.h` instead of
    `<vulkan/vulkan_sc.h>`. The desktop build exports the JSON, and `vulkan.h` and `vulkan_sc.h`
-   cannot share a translation unit. `vulkansc_compat.h` includes `vulkan_sc.h` when `WZ_VULKANSC`
-   is defined, and otherwise `vulkan.h` plus the three Vulkan SC declarations the exporter uses.
+   cannot share a translation unit. `vulkansc_compat.h` includes `vulkan.h` plus the three Vulkan SC
+   declarations the exporter uses (or `vulkan_sc.h`, if `WZ_VULKANSC_EXPORTER_USE_VULKAN_SC_H` is
+   defined; Warzone 2100 does not define it, because its Vulkan SC build also uses the desktop headers).
 2. `pResolveAttachments` is written out, for both render pass create info forms. The original
    always wrote `"NULL"`, which is wrong for the multisampled scene passes.
 3. Each document is named `<name>.pc.<identifier in hex>.json` instead of `<name>.pc.json`,

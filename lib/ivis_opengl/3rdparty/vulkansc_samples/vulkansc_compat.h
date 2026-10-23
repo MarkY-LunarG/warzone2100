@@ -4,15 +4,16 @@
 * The exporter was written against <vulkan/vulkan_sc.h>. Warzone 2100 exports pipeline JSON from
 * its desktop Vulkan build, which uses <vulkan/vulkan.h>, and the two headers cannot share a
 * translation unit. The structures the exporter writes have the same layout in both headers, so
-* in the desktop build this header declares only the Vulkan SC items the exporter names, exactly as
-* vulkan_sc_core.h (VulkanSC-Headers 1.0.22) declares them.
+* this header declares only the Vulkan SC items the exporter names, exactly as vulkan_sc_core.h
+* (VulkanSC-Headers 1.0.22) declares them. Warzone 2100 uses the desktop headers in its Vulkan SC
+* build too, so it does not define WZ_VULKANSC_EXPORTER_USE_VULKAN_SC_H.
 *
 * This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
 */
 
 #pragma once
 
-#if defined(WZ_VULKANSC)
+#if defined(WZ_VULKANSC_EXPORTER_USE_VULKAN_SC_H)
 
 #include <vulkan/vulkan_sc.h>
 
@@ -39,4 +40,4 @@ typedef struct VkPipelineOfflineCreateInfo {
 
 #endif // !defined(VKSC_API_VERSION_1_0)
 
-#endif // defined(WZ_VULKANSC)
+#endif // defined(WZ_VULKANSC_EXPORTER_USE_VULKAN_SC_H)

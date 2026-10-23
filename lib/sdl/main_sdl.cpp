@@ -547,6 +547,11 @@ std::vector<video_backend> wzAvailableGfxBackends()
 	availableBackends.push_back(video_backend::opengl);
 	availableBackends.push_back(video_backend::opengles);
 #endif
+#if defined(WZ_VULKANSC)
+	// The Vulkan backend of this build is Vulkan SC, which is the first backend. There is no Vulkan backend.
+	availableBackends.erase(std::remove(availableBackends.begin(), availableBackends.end(), video_backend::vulkan), availableBackends.end());
+	availableBackends.insert(availableBackends.begin(), video_backend::vulkansc);
+#endif
 	return availableBackends;
 }
 
@@ -2899,6 +2904,10 @@ static void WZ_SDL_setBackendProperty(SDL_PropertiesID props, const video_backen
 		case video_backend::webgpu:
 			// Dawn creates the surface itself, so SDL needs no OpenGL or Vulkan window
 			return;
+		case video_backend::vulkansc:
+			// Vulkan SC presents to a display (VK_KHR_display), not to the window, and SDL must not load
+			// the Vulkan loader
+			return;
 		case video_backend::num_backends:
 			debug(LOG_FATAL, "Should never happen");
 			break;
@@ -3503,7 +3512,7 @@ optional<SDL_gfx_api_Impl_Factory::Configuration> wzMainScreenSetup_CreateVideoW
 	SDL_gfx_api_Impl_Factory::Configuration sdl_impl_config;
 	sdl_impl_config.useOpenGLES = useOpenGLES;
 	sdl_impl_config.useOpenGLESLibrary = useOpenGLESLibrary;
-	if (backend == video_backend::vulkan)
+	if (backend == video_backend::vulkan || backend == video_backend::vulkansc)
 	{
 		sdl_impl_config.allowImplicitLayers = war_getAllowVulkanImplicitLayers();
 	}
@@ -3649,8 +3658,9 @@ static bool wzAttemptInitializeBackend(optional<video_backend> backend, int32_t 
 	gfx_api::backend_type gfxapi_backend = gfx_api::backend_type::null_backend;
 	if (backend.has_value())
 	{
-		if (backend.value() == video_backend::vulkan)
+		if (backend.value() == video_backend::vulkan || backend.value() == video_backend::vulkansc)
 		{
+			// In a Vulkan SC build, the Vulkan backend is the Vulkan SC backend
 			gfxapi_backend = gfx_api::backend_type::vulkan_backend;
 		}
 		else if (backend.value() == video_backend::webgpu)

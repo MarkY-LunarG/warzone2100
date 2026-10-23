@@ -116,6 +116,7 @@ enum class video_backend
 	opengles,
 	vulkan,
 	webgpu,
+	vulkansc,
 #if defined(WZ_BACKEND_DIRECTX)
 	directx,
 #endif
