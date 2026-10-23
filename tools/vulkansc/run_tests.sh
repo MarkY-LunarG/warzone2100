@@ -18,6 +18,10 @@
 #                      Without it, the Vulkan SC tests are skipped.
 #   VULKANSC_LOADER    The Vulkan SC loader (VulkanSC-Loader/build/<type>/loader/libvulkansc.so.1).
 #                      The default is the system's.
+#   GFXR_VULKANSC_BUILD  A Premium-GFXR build with Vulkan SC (GFXRECON_ENABLE_VULKANSC=ON). With it, the
+#                      Vulkan SC build is also captured through the Vulkan SC capture layer, the capture is
+#                      replayed, and gfxrecon-premium-info checks it (no faults, no error messages, every
+#                      pipeline cache source). Needs VULKANSC_LOADER: the layer forwards to the loader.
 #
 # Every test is an autogame with the high graphics profile (tools/vulkansc/profile_high.cfg), in a new
 # config directory. The Vulkan SC tests run the desktop validation layer under the emulation ICD.
@@ -44,7 +48,7 @@ COMPARE_SECONDS=60
 
 usage()
 {
-	sed -n '2,30s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
+	sed -n '2,31s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
 }
 
 while getopts ":B:S:dkh" opt; do
@@ -235,6 +239,36 @@ else
 	else
 		echo "FAIL  frame comparison: no display mode in the Vulkan SC log"
 		FAILURES=$((FAILURES + 1))
+	fi
+
+	# Capture and replay with Premium-GFXR. WZ loads the capture layer in place of the loader
+	# (WZ_VULKANSC_LIBRARY), and the layer forwards to the loader.
+	if [[ -n "${GFXR_VULKANSC_BUILD:-}" && -n "${VULKANSC_LOADER:-}" ]]; then
+		CAPTURE_LAYER="${GFXR_VULKANSC_BUILD}/layer/vulkansc/libvulkansc_gfxrecon.so"
+		REPLAY="${GFXR_VULKANSC_BUILD}/tools/premium_replay/gfxrecon-premium-replay"
+		INFO="${GFXR_VULKANSC_BUILD}/tools/premium_info/gfxrecon-premium-info"
+		CAPTURE="${WORK_DIR}/capture.gfxr"
+		run_game sc_capture "${SC_GAME}" VK_DRIVER_FILES="${VULKANSC_ICD_JSON}" WZ_VULKANSC_LIBRARY="${CAPTURE_LAYER}" \
+			GFXRECON_VULKANSC_DRIVER_PATH="${VULKANSC_LOADER}" GFXRECON_CAPTURE_FILE="${CAPTURE}" GFXRECON_CAPTURE_FILE_TIMESTAMP=false -- \
+			--skirmish=highground.json --gfxbackend=vulkansc --debug=3d
+		check_log sc_capture "Vulkan SC: highground, captured with the Premium-GFXR Vulkan SC layer"
+		VK_DRIVER_FILES="${VULKANSC_ICD_JSON}" GFXRECON_VULKANSC_DRIVER_PATH="${VULKANSC_LOADER}" timeout 900 "${REPLAY}" "${CAPTURE}" > "${WORK_DIR}/replay.log" 2>&1
+		replay_exit=$?
+		"${INFO}" "${CAPTURE}" > "${WORK_DIR}/capture_info.log" 2>&1
+		frames="$(sed -n 's/.*Measured FPS: .* \([0-9]*\) frames,.*/\1/p' "${WORK_DIR}/replay.log" | tail -1)"
+		faults="$(sed -n 's/^[[:space:]]*Faults:[[:space:]]*\([0-9]*\).*/\1/p' "${WORK_DIR}/capture_info.log" | head -1)"
+		errors="$(sed -n '/Debug Messages:/,/Faults:/s/^[[:space:]]*Error:[[:space:]]*\([0-9]*\).*/\1/p' "${WORK_DIR}/capture_info.log" | head -1)"
+		sources="$(sed -n 's/^[[:space:]]*Pipeline Cache Sources:[[:space:]]*\([0-9]*\).*/\1/p' "${WORK_DIR}/capture_info.log" | head -1)"
+		pipelines="$(ls "${SRC_DIR}"/data/vulkansc/high/wz2100.pc.*.json 2>/dev/null | wc -l)"
+		if [[ ${replay_exit} -eq 0 && -n "${frames}" && "${faults}" == "0" && "${errors}" == "0" && "${sources}" == "${pipelines}" ]]; then
+			echo "PASS  Vulkan SC: capture replayed (${frames} frames); no faults or error messages; ${sources} pipeline cache sources"
+		else
+			echo "FAIL  Vulkan SC: capture and replay"
+			echo "        replay exit ${replay_exit}, frames '${frames}', faults '${faults}', error messages '${errors}', pipeline cache sources '${sources}' of ${pipelines}"
+			FAILURES=$((FAILURES + 1))
+		fi
+	elif [[ -n "${GFXR_VULKANSC_BUILD:-}" ]]; then
+		echo "SKIP  capture and replay: set VULKANSC_LOADER (the capture layer forwards to it)"
 	fi
 fi
 
