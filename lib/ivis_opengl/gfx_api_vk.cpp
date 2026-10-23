@@ -79,6 +79,8 @@
 #include <limits>
 #include <chrono>
 #include <thread>
+#include <fstream>
+#include <iterator>
 
 // Fix #define MemoryBarrier coming from winnt.h
 #undef MemoryBarrier
@@ -1341,6 +1343,15 @@ VKAPI_ATTR VkBool32 VKAPI_CALL WZDebugUtilsCallback(
 		buf << "< no callback data? >";
 	}
 
+	// Debug aid: WZ_VULKAN_DEBUG_VALIDATION_NONFATAL=1 logs validation messages as errors instead of
+	// fatal errors, so that an unattended run (an autogame, a sweep) does not stop on a message box.
+	static const bool validationNonFatal = (getenv("WZ_VULKAN_DEBUG_VALIDATION_NONFATAL") != nullptr);
+	if (logFatal && validationNonFatal)
+	{
+		logFatal = false;
+		part = LOG_ERROR;
+	}
+
 	debugLogFromGfxCallback((logFatal) ? LOG_FATAL : part, "%s", buf.str().c_str());
 
 	return VK_FALSE;
@@ -1423,15 +1434,16 @@ vk::ShaderModule VkPSO::get_module(const std::string& name, const WZ_vk::Dispatc
 	return root->sharedPipelineObjects.shaderModule(dev, vkDynLoader, name, &VkPSO::readShaderBuf);
 }
 
-std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule)
+std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule, bool hasTessellationStages)
 {
+	// In Vulkan SC every module is null: the pipeline cache has the shaders
 	std::vector<vk::PipelineShaderStageCreateInfo> stages;
 	stages.push_back(
 		vk::PipelineShaderStageCreateInfo()
 			.setModule(vertexModule)
 			.setPName("main")
 			.setStage(vk::ShaderStageFlagBits::eVertex));
-	if (tessControlModule)
+	if (hasTessellationStages)
 	{
 		stages.push_back(
 			vk::PipelineShaderStageCreateInfo()
@@ -1439,7 +1451,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::Shade
 				.setPName("main")
 				.setStage(vk::ShaderStageFlagBits::eTessellationControl));
 	}
-	if (tessEvalModule)
+	if (hasTessellationStages)
 	{
 		stages.push_back(
 			vk::PipelineShaderStageCreateInfo()
@@ -2009,6 +2021,7 @@ VkPSO::VkPSO(vk::Device _dev,
 	const std::string tessControlSpv = vk_stage_path(shaderInfo, gfx_api::shader_stage_kind::tess_control);
 	const std::string tessEvalSpv = vk_stage_path(shaderInfo, gfx_api::shader_stage_kind::tess_eval);
 	const std::string fragmentSpv = vk_stage_path(shaderInfo, gfx_api::shader_stage_kind::fragment);
+#if !defined(WZ_VULKANSC)
 	vertexShader = get_module(vertexSpv, *pVkDynLoader);
 	if (!tessControlSpv.empty())
 	{
@@ -2019,7 +2032,8 @@ VkPSO::VkPSO(vk::Device _dev,
 		tessEvalShader = get_module(tessEvalSpv, *pVkDynLoader);
 	}
 	fragmentShader = get_module(fragmentSpv, *pVkDynLoader);
-	auto pipelineStages = get_stages(vertexShader, tessControlShader, tessEvalShader, fragmentShader);
+#endif
+	auto pipelineStages = get_stages(vertexShader, tessControlShader, tessEvalShader, fragmentShader, hasTessStages);
 
 	// Every specialization constant the fragment shader declares must be given a value: Vulkan SC compiles
 	// the pipeline offline from these values, and its layer reports a pipeline without them.
@@ -2080,7 +2094,48 @@ VkPSO::VkPSO(vk::Device _dev,
 	const auto tessellationState = vk::PipelineTessellationStateCreateInfo()
 		.setPatchControlPoints(4);
 
-	const auto pso = vk::GraphicsPipelineCreateInfo()
+	// The pipeline's name: "<recipe>/<render pass class>/<specialization values>". Each specialization is its own
+	// Vulkan SC pipeline, and the Vulkan SC pipeline identifier is made from the name.
+	std::string pipelineName;
+	std::string recipe;
+	std::string renderPassClass;
+	std::string specialization;
+	std::vector<std::string> shaderFiles;
+#if defined(WZ_VULKANSC)
+	const bool needsPipelineName = true;
+#else
+	const bool needsPipelineName = (root->pipelineJsonExport != nullptr);
+#endif
+	if (needsPipelineName)
+	{
+		const auto appendValue = [&specialization](const char* prefix, uint32_t value) {
+			specialization += (specialization.empty() ? "" : ".") + std::string(prefix) + std::to_string(value);
+		};
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_mode) { appendValue("m", specValues.shadowMode); }
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_filter_size) { appendValue("f", specValues.shadowFilterSize); }
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_cascades) { appendValue("c", specValues.shadowCascadesCount); }
+		if (shaderInfo.spec_constants & gfx_api::spec_point_light_enabled) { appendValue("l", specValues.isPointLightPerPixelEnabled ? 1 : 0); }
+		if (specialization.empty())
+		{
+			specialization = "-";
+		}
+
+		// In the order get_stages() puts the stages in.
+		for (const auto kind : {gfx_api::shader_stage_kind::vertex, gfx_api::shader_stage_kind::tess_control, gfx_api::shader_stage_kind::tess_eval, gfx_api::shader_stage_kind::fragment})
+		{
+			const gfx_api::shader_stage_file* stage = gfx_api::find_stage(shaderInfo, kind);
+			if (stage != nullptr && stage->basename != nullptr)
+			{
+				shaderFiles.push_back(std::string(stage->basename) + ".spv");
+			}
+		}
+
+		recipe = gfx_api::vk::pipelineRecipeName(createInfo);
+		renderPassClass = root->renderPassClassNameFor(rp);
+		pipelineName = recipe + "/" + renderPassClass + "/" + specialization;
+	}
+
+	auto pso = vk::GraphicsPipelineCreateInfo()
 		.setPColorBlendState(&color_blend_state)
 		.setPDepthStencilState(&depthStencilState)
 		.setPRasterizationState(&rasterizationState)
@@ -2096,7 +2151,28 @@ VkPSO::VkPSO(vk::Device _dev,
 		.setPMultisampleState(&multisampleState)
 		.setRenderPass(rp);
 
-	vk::ResultValue<vk::Pipeline> result = dev.createGraphicsPipeline(vk::PipelineCache(), pso, nullptr, *pVkDynLoader);
+	vk::PipelineCache pipelineCache;
+#if defined(WZ_VULKANSC)
+	// The pipeline comes from the pipeline cache, by the identifier of its name
+	uint8_t pipelineIdentifier[VK_UUID_SIZE];
+	gfx_api::vk::PipelineJsonExport::pipelineIdentifier(pipelineName, pipelineIdentifier);
+	gfx_api::vk::sc::PipelineChainStorage offlineInfoStorage;
+	pso.setPNext(gfx_api::vk::sc::pipelineCreateInfoChain(offlineInfoStorage, pipelineIdentifier, gfx_api::vk::PipelineJsonExport::POOL_ENTRY_SIZE, nullptr));
+	pipelineCache = root->vulkanSCPipelineCache;
+#endif
+
+	vk::ResultValue<vk::Pipeline> result(vk::Result::eErrorUnknown, vk::Pipeline());
+	try {
+		result = dev.createGraphicsPipeline(pipelineCache, pso, nullptr, *pVkDynLoader);
+	}
+	catch (const vk::SystemError& e)
+	{
+#if defined(WZ_VULKANSC)
+		// VK_ERROR_NO_PIPELINE_MATCH: the pipeline cache was built without it (tools/vulkansc/export_pipelines.sh)
+		debug(LOG_ERROR, "Vulkan SC: could not create pipeline %s from the pipeline cache: %s", pipelineName.c_str(), e.what());
+#endif
+		throw;
+	}
 	switch (result.result)
 	{
 		case vk::Result::eSuccess:
@@ -2108,35 +2184,8 @@ VkPSO::VkPSO(vk::Device _dev,
 
 	if (root->pipelineJsonExport)
 	{
-		// The specialization values are part of the name: each combination is its own Vulkan SC pipeline.
-		std::string specialization;
-		const auto appendValue = [&specialization](const char* prefix, uint32_t value) {
-			specialization += (specialization.empty() ? "" : ".") + std::string(prefix) + std::to_string(value);
-		};
-		if (shaderInfo.spec_constants & gfx_api::spec_shadow_mode) { appendValue("m", specValues.shadowMode); }
-		if (shaderInfo.spec_constants & gfx_api::spec_shadow_filter_size) { appendValue("f", specValues.shadowFilterSize); }
-		if (shaderInfo.spec_constants & gfx_api::spec_shadow_cascades) { appendValue("c", specValues.shadowCascadesCount); }
-		if (shaderInfo.spec_constants & gfx_api::spec_point_light_enabled) { appendValue("l", specValues.isPointLightPerPixelEnabled ? 1 : 0); }
-		if (specialization.empty())
-		{
-			specialization = "-";
-		}
-
-		// In the order get_stages() puts the stages in.
-		std::vector<std::string> shaderFiles;
-		for (const auto kind : {gfx_api::shader_stage_kind::vertex, gfx_api::shader_stage_kind::tess_control, gfx_api::shader_stage_kind::tess_eval, gfx_api::shader_stage_kind::fragment})
-		{
-			const gfx_api::shader_stage_file* stage = gfx_api::find_stage(shaderInfo, kind);
-			if (stage != nullptr && stage->basename != nullptr)
-			{
-				shaderFiles.push_back(std::string(stage->basename) + ".spv");
-			}
-		}
-
-		const std::string recipe = gfx_api::vk::pipelineRecipeName(createInfo);
-		const std::string renderPassClass = root->renderPassClassNameFor(rp);
-		root->pipelineJsonExport->recordGraphicsPipeline(recipe + "/" + renderPassClass + "/" + specialization,
-			recipe, renderPassClass, specialization, static_cast<const VkGraphicsPipelineCreateInfo&>(pso), shaderFiles);
+		root->pipelineJsonExport->recordGraphicsPipeline(pipelineName, recipe, renderPassClass, specialization,
+			static_cast<const VkGraphicsPipelineCreateInfo&>(pso), shaderFiles);
 	}
 }
 
@@ -4144,6 +4193,14 @@ void VkRoot::shutdown()
 	if (dev)
 	{
 		sharedPipelineObjects.destroy(dev, vkDynLoader);
+#if defined(WZ_VULKANSC)
+		// Before the device: the Vulkan SC layer reports a pipeline cache that outlives the device (guide 6)
+		if (vulkanSCPipelineCache)
+		{
+			dev.destroyPipelineCache(vulkanSCPipelineCache, nullptr, vkDynLoader);
+			vulkanSCPipelineCache = vk::PipelineCache();
+		}
+#endif
 	}
 
 	// destroy allocator
@@ -4502,6 +4559,23 @@ void VkRoot::createNewSwapchainAndSwapchainSpecificStuff(const vk::Result& reaso
 
 vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats)
 {
+	// Debug aid: WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT=<VkFormat value> uses that format if the surface has it.
+	// The Vulkan SC pipeline export uses it to build the swapchain render passes with the format of the
+	// Vulkan SC display, which a desktop window may not prefer (the pipelines name the format).
+	if (const char* forcedFormatValue = getenv("WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT"))
+	{
+		const auto forcedFormat = static_cast<vk::Format>(strtol(forcedFormatValue, nullptr, 10));
+		for (const auto& availableFormat : availableFormats)
+		{
+			if (availableFormat.format == forcedFormat)
+			{
+				debug(LOG_INFO, "Using the forced swapchain format: %s", to_string(forcedFormat).c_str());
+				return availableFormat;
+			}
+		}
+		debug(LOG_ERROR, "WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT: the surface does not have %s", to_string(forcedFormat).c_str());
+	}
+
 	const auto desiredFormats = std::array<vk::SurfaceFormatKHR, 4> {
 		vk::SurfaceFormatKHR{ vk::Format::eA2B10G10R10UnormPack32, vk::ColorSpaceKHR::eSrgbNonlinear },
 		vk::SurfaceFormatKHR{ vk::Format::eA2R10G10B10UnormPack32, vk::ColorSpaceKHR::eSrgbNonlinear },
@@ -5538,7 +5612,62 @@ gfx_api::vk::sc::DeviceReservation VkRoot::vulkanSCDeviceReservation() const
 	r.maxImageViewArrayLayers = 256;
 	r.maxLayeredImageViewMipLevels = 15;
 	r.maxTimestampQueriesPerPool = 2 * GPU_TIMING_SLOTS;
+	if (!vulkanSCPipelineCacheData.empty())
+	{
+		// One pool entry for each pipeline in the cache, and a few for identical recipes that are built twice
+		r.pipelineCacheData = vulkanSCPipelineCacheData.data();
+		r.pipelineCacheSize = vulkanSCPipelineCacheData.size();
+		r.pipelinePoolEntryCount = vulkanSCPipelineCount + 16;
+		r.pipelinePoolEntrySize = gfx_api::vk::PipelineJsonExport::POOL_ENTRY_SIZE;
+		r.graphicsPipelineRequestCount = vulkanSCPipelineCount + 16;
+	}
 	return r;
+}
+
+// The pipeline cache: WZ_VULKANSC_PIPELINE_CACHE=<file>, or shaders/vksc/wz2100.vksc.bin in the data
+// (the build makes it with the pipeline cache compiler it was configured with).
+bool VkRoot::loadVulkanSCPipelineCache()
+{
+	vulkanSCPipelineCacheData.clear();
+	vulkanSCPipelineCount = 0;
+	if (const char* cacheFile = getenv("WZ_VULKANSC_PIPELINE_CACHE"))
+	{
+		std::ifstream file(cacheFile, std::ios::binary);
+		if (!file.is_open())
+		{
+			debug(LOG_ERROR, "Vulkan SC: could not open the pipeline cache %s", cacheFile);
+			return false;
+		}
+		vulkanSCPipelineCacheData.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+		debug(LOG_INFO, "Vulkan SC pipeline cache: %s", cacheFile);
+	}
+	else
+	{
+		const char* cachePath = "shaders/vksc/wz2100.vksc.bin";
+		PHYSFS_file* fp = PHYSFS_openRead(cachePath);
+		if (fp == nullptr)
+		{
+			debug(LOG_INFO, "Vulkan SC: no pipeline cache (%s); nothing is drawn", cachePath);
+			return false;
+		}
+		const PHYSFS_sint64 fileSize = PHYSFS_fileLength(fp);
+		if (fileSize > 0 && fileSize < std::numeric_limits<PHYSFS_sint32>::max())
+		{
+			vulkanSCPipelineCacheData.resize(static_cast<size_t>(fileSize));
+			WZ_PHYSFS_readBytes(fp, vulkanSCPipelineCacheData.data(), static_cast<PHYSFS_uint32>(fileSize));
+		}
+		PHYSFS_close(fp);
+		debug(LOG_INFO, "Vulkan SC pipeline cache: %s (from %s)", cachePath, PHYSFS_getRealDir(cachePath));
+	}
+	vulkanSCPipelineCount = gfx_api::vk::sc::pipelineCacheEntryCount(vulkanSCPipelineCacheData.data(), vulkanSCPipelineCacheData.size());
+	if (vulkanSCPipelineCount == 0)
+	{
+		debug(LOG_ERROR, "Vulkan SC: the pipeline cache is not a Vulkan SC pipeline cache, or has no pipelines");
+		vulkanSCPipelineCacheData.clear();
+		return false;
+	}
+	debug(LOG_INFO, "Vulkan SC pipeline cache: %u pipelines, %zu bytes", vulkanSCPipelineCount, vulkanSCPipelineCacheData.size());
+	return true;
 }
 
 // Vulkan SC has no vkFreeMemory, vkDestroyCommandPool, vkDestroyDescriptorPool, vkDestroySwapchainKHR,
@@ -5588,8 +5717,8 @@ void VkRoot::logVulkanSCProperties()
 bool VkRoot::canCreatePipelines() const
 {
 #if defined(WZ_VULKANSC)
-	// Phase 1 of the Vulkan SC plan: there is no pipeline cache yet, so nothing is drawn
-	return false;
+	// Without a pipeline cache, nothing is drawn
+	return static_cast<bool>(vulkanSCPipelineCache);
 #else
 	return true;
 #endif
@@ -5648,7 +5777,8 @@ bool VkRoot::createLogicalDevice()
 		.setQueueCreateInfoCount(static_cast<uint32_t>(queueCreateInfos.size()))
 		.setPQueueCreateInfos(queueCreateInfos.data());
 #if defined(WZ_VULKANSC)
-	// The fault callback, the Vulkan SC features, and the object reservation
+	// The fault callback, the Vulkan SC features, and the object reservation with the pipeline cache
+	loadVulkanSCPipelineCache();
 	gfx_api::vk::sc::DeviceChainStorage vulkanSCChainStorage;
 	deviceCreateInfo.setPNext(gfx_api::vk::sc::deviceCreateInfoChain(vulkanSCChainStorage, vulkanSCDeviceReservation(), nullptr));
 #endif
@@ -5659,6 +5789,13 @@ bool VkRoot::createLogicalDevice()
 	catch (const vk::SystemError& e)
 	{
 		debug(LOG_ERROR, "vk::PhysicalDevice::createDevice: failed with error: %s", e.what());
+#if defined(WZ_VULKANSC)
+		constexpr int vkErrorInvalidPipelineCacheData = -1000298000; // VK_ERROR_INVALID_PIPELINE_CACHE_DATA (Vulkan SC)
+		if (e.code().value() == vkErrorInvalidPipelineCacheData)
+		{
+			debug(LOG_ERROR, "Vulkan SC: the pipeline cache was built for a different Vulkan SC implementation; build it with this implementation's pipeline cache compiler");
+		}
+#endif
 		// TODO: Any cleanup here?
 		return false;
 	}
@@ -5685,6 +5822,14 @@ bool VkRoot::createLogicalDevice()
 #if defined(WZ_VULKANSC)
 	installVulkanSCRemovedEntryPoints();
 	logVulkanSCProperties();
+	if (!vulkanSCPipelineCacheData.empty())
+	{
+		const uint64_t cacheHandle = gfx_api::vk::sc::createPipelineCache(static_cast<VkDevice>(dev), reinterpret_cast<void*>(vkDynLoader.vkCreatePipelineCache),
+			vulkanSCPipelineCacheData.data(), vulkanSCPipelineCacheData.size());
+		VkPipelineCache cache = VK_NULL_HANDLE;
+		memcpy(&cache, &cacheHandle, sizeof(cache));
+		vulkanSCPipelineCache = vk::PipelineCache(cache);
+	}
 #endif
 
 	// Count the objects of each type (before createAllocator() copies the entry points into VMA).

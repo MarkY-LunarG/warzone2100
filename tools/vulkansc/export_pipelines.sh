@@ -4,7 +4,8 @@
 # Usage: export_pipelines.sh [-B <build dir>] [-p <profile>] [-o <output dir>] [-c]
 #
 #   -B <dir>     Build directory with src/warzone2100. The default is "build".
-#   -p <profile> Graphics profile: tools/vulkansc/profile_<profile>.cfg. The default is "high".
+#   -p <profile> Graphics profile: tools/vulkansc/profile_<profile>.cfg (the game settings) and
+#                profile_<profile>.env (environment variables, if it exists). The default is "high".
 #   -o <dir>     Output directory. The default is "data/vulkansc/<profile>".
 #                The old documents and manifest there are removed first, so that a pipeline the
 #                game no longer builds does not stay behind.
@@ -32,7 +33,7 @@ SESSIONS=(highground.json longbattle.json)
 
 usage()
 {
-	sed -n '2,23s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
+	sed -n '2,24s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
 }
 
 while getopts ":B:p:o:ch" opt; do
@@ -59,6 +60,7 @@ done
 
 GAME="${BUILD_DIR}/src/warzone2100"
 PROFILE_FILE="${SRC_DIR}/tools/vulkansc/profile_${PROFILE}.cfg"
+PROFILE_ENV_FILE="${SRC_DIR}/tools/vulkansc/profile_${PROFILE}.env"
 OUTPUT_DIR="${OUTPUT_DIR:-${SRC_DIR}/data/vulkansc/${PROFILE}}"
 if [[ ! -x "${GAME}" ]]; then
 	echo "error: ${GAME} not found. Build the desktop Vulkan backend first." >&2
@@ -67,6 +69,13 @@ fi
 if [[ ! -f "${PROFILE_FILE}" ]]; then
 	echo "error: ${PROFILE_FILE} not found" >&2
 	exit 1
+fi
+
+if [[ -f "${PROFILE_ENV_FILE}" ]]; then
+	set -a
+	# shellcheck disable=SC1090
+	source "${PROFILE_ENV_FILE}"
+	set +a
 fi
 
 WORK_DIR="$(mktemp -d)"

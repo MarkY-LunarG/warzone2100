@@ -110,6 +110,10 @@ struct CommandPoolChainStorage
 {
 	alignas(16) unsigned char bytes[64];
 };
+struct PipelineChainStorage
+{
+	alignas(16) unsigned char bytes[64];
+};
 
 // Returns the head of: VkFaultCallbackInfo -> VkPhysicalDeviceVulkanSC10Features ->
 // VkDeviceObjectReservationCreateInfo (with the pipeline cache and pool size, if any) -> next.
@@ -118,6 +122,18 @@ const void* deviceCreateInfoChain(DeviceChainStorage& storage, const DeviceReser
 
 // Returns a VkCommandPoolMemoryReservationCreateInfo -> next. Vulkan SC requires it on every command pool.
 const void* commandPoolCreateInfoChain(CommandPoolChainStorage& storage, uint32_t maxCommandBuffers, uint64_t reservedSizePerCommandBuffer, const void* next);
+
+// The number of pipelines in a Vulkan SC pipeline cache (VkPipelineCacheHeaderVersionSafetyCriticalOne),
+// or 0 if data is not one.
+uint32_t pipelineCacheEntryCount(const void* data, size_t size);
+
+// Creates the VkPipelineCache with the same create info as the device reservation (read-only, the data
+// in application storage). createPipelineCache is a PFN_vkCreatePipelineCache. Returns the handle's
+// value, or 0 on failure.
+uint64_t createPipelineCache(void* device, void* createPipelineCache, const void* data, size_t size);
+
+// Returns a VkPipelineOfflineCreateInfo -> next, which names the pipeline in the pipeline cache.
+const void* pipelineCreateInfoChain(PipelineChainStorage& storage, const uint8_t identifier[16], uint64_t poolEntrySize, const void* next);
 
 // Reads VkPhysicalDeviceVulkanSC10Properties. getPhysicalDeviceProperties2 is a PFN_vkGetPhysicalDeviceProperties2.
 bool getProperties(void* physicalDevice, void* getPhysicalDeviceProperties2, Properties& out);

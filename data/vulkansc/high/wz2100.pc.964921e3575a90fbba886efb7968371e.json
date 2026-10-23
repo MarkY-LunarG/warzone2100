@@ -8,7 +8,7 @@
                 "pAttachments": [
                     {
                         "flags": "0",
-                        "format": "VK_FORMAT_A2B10G10R10_UNORM_PACK32",
+                        "format": "VK_FORMAT_B8G8R8A8_UNORM",
                         "samples": "VK_SAMPLE_COUNT_1_BIT",
                         "loadOp": "VK_ATTACHMENT_LOAD_OP_LOAD",
                         "storeOp": "VK_ATTACHMENT_STORE_OP_STORE",
@@ -21,11 +21,11 @@
                         "flags": "0",
                         "format": "VK_FORMAT_D32_SFLOAT_S8_UINT",
                         "samples": "VK_SAMPLE_COUNT_1_BIT",
-                        "loadOp": "VK_ATTACHMENT_LOAD_OP_LOAD",
+                        "loadOp": "VK_ATTACHMENT_LOAD_OP_CLEAR",
                         "storeOp": "VK_ATTACHMENT_STORE_OP_DONT_CARE",
                         "stencilLoadOp": "VK_ATTACHMENT_LOAD_OP_DONT_CARE",
                         "stencilStoreOp": "VK_ATTACHMENT_STORE_OP_DONT_CARE",
-                        "initialLayout": "VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL",
+                        "initialLayout": "VK_IMAGE_LAYOUT_UNDEFINED",
                         "finalLayout": "VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL"
                     }
                 ],
@@ -127,7 +127,7 @@
                 "pNext": {
                     "sType": "VK_STRUCTURE_TYPE_PIPELINE_OFFLINE_CREATE_INFO",
                     "pNext": "NULL",
-                    "pipelineIdentifier": [153, 137, 44, 40, 139, 19, 203, 228, 167, 137, 101, 140, 54, 167, 66, 111],
+                    "pipelineIdentifier": [150, 73, 33, 227, 87, 90, 144, 251, 186, 136, 110, 251, 121, 104, 55, 30],
                     "matchControl": "VK_PIPELINE_MATCH_CONTROL_APPLICATION_UUID_EXACT_MATCH",
                     "poolEntrySize": "1048576"
                 },
@@ -157,19 +157,30 @@
                     "sType": "VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO",
                     "pNext": "NULL",
                     "flags": 0,
-                    "vertexBindingDescriptionCount": 1,
+                    "vertexBindingDescriptionCount": 2,
                     "pVertexBindingDescriptions": [
                         {
                             "binding": 0,
+                            "stride": 8,
+                            "inputRate": "VK_VERTEX_INPUT_RATE_VERTEX"
+                        },
+                        {
+                            "binding": 1,
                             "stride": 4,
                             "inputRate": "VK_VERTEX_INPUT_RATE_VERTEX"
                         }
                     ],
-                    "vertexAttributeDescriptionCount": 1,
+                    "vertexAttributeDescriptionCount": 2,
                     "pVertexAttributeDescriptions": [
                         {
                             "location": 0,
                             "binding": 0,
+                            "format": "VK_FORMAT_R32G32_SFLOAT",
+                            "offset": 0
+                        },
+                        {
+                            "location": 2,
+                            "binding": 1,
                             "format": "VK_FORMAT_R8G8B8A8_UNORM",
                             "offset": 0
                         }
@@ -179,7 +190,7 @@
                     "sType": "VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO",
                     "pNext": "NULL",
                     "flags": 0,
-                    "topology": "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP",
+                    "topology": "VK_PRIMITIVE_TOPOLOGY_LINE_STRIP",
                     "primitiveRestartEnable": "VK_FALSE"
                 },
                 "pTessellationState": "NULL",
@@ -291,14 +302,14 @@
         "ShaderFileNames": [
             {
                 "stage": "VK_SHADER_STAGE_VERTEX_BIT",
-                "filename": "rect.vert.spv"
+                "filename": "gfx_color.vert.spv"
             },
             {
                 "stage": "VK_SHADER_STAGE_FRAGMENT_BIT",
-                "filename": "rect.frag.spv"
+                "filename": "gfx.frag.spv"
             }
         ]
     },
     "EnabledExtensions": [],
-    "PipelineUUID": [153, 137, 44, 40, 139, 19, 203, 228, 167, 137, 101, 140, 54, 167, 66, 111]
+    "PipelineUUID": [150, 73, 33, 227, 87, 90, 144, 251, 186, 136, 110, 251, 121, 104, 55, 30]
 }

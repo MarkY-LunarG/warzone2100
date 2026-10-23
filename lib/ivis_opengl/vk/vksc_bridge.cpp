@@ -53,6 +53,18 @@ struct DeviceChain
 static_assert(sizeof(DeviceChain) <= sizeof(DeviceChainStorage::bytes), "DeviceChainStorage is too small");
 static_assert(alignof(DeviceChain) <= alignof(DeviceChainStorage), "DeviceChainStorage is not aligned enough");
 static_assert(sizeof(VkCommandPoolMemoryReservationCreateInfo) <= sizeof(CommandPoolChainStorage::bytes), "CommandPoolChainStorage is too small");
+static_assert(sizeof(VkPipelineOfflineCreateInfo) <= sizeof(PipelineChainStorage::bytes), "PipelineChainStorage is too small");
+
+// The create info of the pipeline cache: the device reservation and vkCreatePipelineCache must use the same one.
+VkPipelineCacheCreateInfo pipelineCacheCreateInfo(const void* data, size_t size)
+{
+	VkPipelineCacheCreateInfo createInfo = {};
+	createInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+	createInfo.flags = VK_PIPELINE_CACHE_CREATE_READ_ONLY_BIT | VK_PIPELINE_CACHE_CREATE_USE_APPLICATION_STORAGE_BIT;
+	createInfo.initialDataSize = size;
+	createInfo.pInitialData = data;
+	return createInfo;
+}
 
 const char* faultLevelName(VkFaultLevel level)
 {
@@ -121,10 +133,7 @@ const void* deviceCreateInfoChain(DeviceChainStorage& storage, const DeviceReser
 	if (r.pipelineCacheData != nullptr)
 	{
 		// Read-only, and the data stays where the application keeps it, as the samples load their caches.
-		chain->pipelineCache.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-		chain->pipelineCache.flags = VK_PIPELINE_CACHE_CREATE_READ_ONLY_BIT | VK_PIPELINE_CACHE_CREATE_USE_APPLICATION_STORAGE_BIT;
-		chain->pipelineCache.initialDataSize = r.pipelineCacheSize;
-		chain->pipelineCache.pInitialData = r.pipelineCacheData;
+		chain->pipelineCache = pipelineCacheCreateInfo(r.pipelineCacheData, r.pipelineCacheSize);
 		o.pipelineCacheCreateInfoCount = 1;
 		o.pPipelineCacheCreateInfos = &chain->pipelineCache;
 
@@ -187,6 +196,55 @@ const void* commandPoolCreateInfoChain(CommandPoolChainStorage& storage, uint32_
 	reservation->commandPoolMaxCommandBuffers = maxCommandBuffers;
 	reservation->commandPoolReservedSize = static_cast<VkDeviceSize>(maxCommandBuffers) * reservedSizePerCommandBuffer;
 	return reservation;
+}
+
+uint32_t pipelineCacheEntryCount(const void* data, size_t size)
+{
+	VkPipelineCacheHeaderVersionSafetyCriticalOne header;
+	if (data == nullptr || size < sizeof(header))
+	{
+		return 0;
+	}
+	memcpy(&header, data, sizeof(header));
+	if (header.headerVersionOne.headerVersion != VK_PIPELINE_CACHE_HEADER_VERSION_SAFETY_CRITICAL_ONE)
+	{
+		return 0;
+	}
+	return header.pipelineIndexCount;
+}
+
+uint64_t createPipelineCache(void* device, void* createPipelineCache, const void* data, size_t size)
+{
+	auto pfnCreatePipelineCache = reinterpret_cast<PFN_vkCreatePipelineCache>(createPipelineCache);
+	if (device == nullptr || pfnCreatePipelineCache == nullptr)
+	{
+		return 0;
+	}
+	const VkPipelineCacheCreateInfo createInfo = pipelineCacheCreateInfo(data, size);
+	VkPipelineCache cache = VK_NULL_HANDLE;
+	const VkResult result = pfnCreatePipelineCache(static_cast<VkDevice>(device), &createInfo, nullptr, &cache);
+	if (result != VK_SUCCESS)
+	{
+		debug(LOG_ERROR, "Vulkan SC: vkCreatePipelineCache failed: %d", static_cast<int>(result));
+		return 0;
+	}
+	static_assert(sizeof(cache) <= sizeof(uint64_t), "VkPipelineCache does not fit in 64 bits");
+	uint64_t value = 0;
+	memcpy(&value, &cache, sizeof(cache));
+	return value;
+}
+
+const void* pipelineCreateInfoChain(PipelineChainStorage& storage, const uint8_t identifier[16], uint64_t poolEntrySize, const void* next)
+{
+	static_assert(VK_UUID_SIZE == 16, "A pipeline identifier is 16 bytes");
+	auto* offlineInfo = new (storage.bytes) VkPipelineOfflineCreateInfo();
+	memset(offlineInfo, 0, sizeof(*offlineInfo));
+	offlineInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_OFFLINE_CREATE_INFO;
+	offlineInfo->pNext = next;
+	memcpy(offlineInfo->pipelineIdentifier, identifier, VK_UUID_SIZE);
+	offlineInfo->matchControl = VK_PIPELINE_MATCH_CONTROL_APPLICATION_UUID_EXACT_MATCH;
+	offlineInfo->poolEntrySize = poolEntrySize;
+	return offlineInfo;
 }
 
 bool getProperties(void* physicalDevice, void* getPhysicalDeviceProperties2, Properties& out)

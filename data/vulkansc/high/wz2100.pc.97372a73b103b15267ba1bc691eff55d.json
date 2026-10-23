@@ -8,7 +8,7 @@
                 "pAttachments": [
                     {
                         "flags": "0",
-                        "format": "VK_FORMAT_A2B10G10R10_UNORM_PACK32",
+                        "format": "VK_FORMAT_B8G8R8A8_UNORM",
                         "samples": "VK_SAMPLE_COUNT_1_BIT",
                         "loadOp": "VK_ATTACHMENT_LOAD_OP_LOAD",
                         "storeOp": "VK_ATTACHMENT_STORE_OP_STORE",
@@ -21,11 +21,11 @@
                         "flags": "0",
                         "format": "VK_FORMAT_D32_SFLOAT_S8_UINT",
                         "samples": "VK_SAMPLE_COUNT_1_BIT",
-                        "loadOp": "VK_ATTACHMENT_LOAD_OP_CLEAR",
+                        "loadOp": "VK_ATTACHMENT_LOAD_OP_LOAD",
                         "storeOp": "VK_ATTACHMENT_STORE_OP_DONT_CARE",
                         "stencilLoadOp": "VK_ATTACHMENT_LOAD_OP_DONT_CARE",
                         "stencilStoreOp": "VK_ATTACHMENT_STORE_OP_DONT_CARE",
-                        "initialLayout": "VK_IMAGE_LAYOUT_UNDEFINED",
+                        "initialLayout": "VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL",
                         "finalLayout": "VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL"
                     }
                 ],
@@ -107,15 +107,8 @@
                     "sType": "VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO",
                     "pNext": "NULL",
                     "flags": "0",
-                    "bindingCount": 1,
+                    "bindingCount": 0,
                     "pBindings": [
-                        {
-                            "binding": 0,
-                            "descriptorType": "VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER",
-                            "descriptorCount": 1,
-                            "stageFlags": "VK_SHADER_STAGE_FRAGMENT_BIT",
-                            "pImmutableSamplers": "NULL"
-                        }
                     ]
                 }
             }
@@ -134,7 +127,7 @@
                 "pNext": {
                     "sType": "VK_STRUCTURE_TYPE_PIPELINE_OFFLINE_CREATE_INFO",
                     "pNext": "NULL",
-                    "pipelineIdentifier": [37, 123, 153, 8, 46, 240, 170, 241, 176, 52, 80, 63, 225, 239, 67, 136],
+                    "pipelineIdentifier": [151, 55, 42, 115, 177, 3, 177, 82, 103, 186, 27, 198, 145, 239, 245, 93],
                     "matchControl": "VK_PIPELINE_MATCH_CONTROL_APPLICATION_UUID_EXACT_MATCH",
                     "poolEntrySize": "1048576"
                 },
@@ -302,10 +295,10 @@
             },
             {
                 "stage": "VK_SHADER_STAGE_FRAGMENT_BIT",
-                "filename": "texturedrect.frag.spv"
+                "filename": "rect.frag.spv"
             }
         ]
     },
     "EnabledExtensions": [],
-    "PipelineUUID": [37, 123, 153, 8, 46, 240, 170, 241, 176, 52, 80, 63, 225, 239, 67, 136]
+    "PipelineUUID": [151, 55, 42, 115, 177, 3, 177, 82, 103, 186, 27, 198, 145, 239, 245, 93]
 }
