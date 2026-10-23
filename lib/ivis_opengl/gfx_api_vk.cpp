@@ -79,6 +79,7 @@
 #include <limits>
 #include <chrono>
 #include <thread>
+#include <array>
 #include <fstream>
 #include <iterator>
 
@@ -647,6 +648,60 @@ bool VkRoot::findSupportedInstanceExtensions(std::vector<const char*> extensions
 	return true;
 }
 
+// MARK: Vulkan SC memory pools
+
+#if defined(WZ_VULKANSC)
+// Vulkan SC has no vkFreeMemory, and reserves every allocation at device creation. So every VMA
+// allocation comes from a pool whose blocks are all allocated when it is made, and never freed
+// (minBlockCount == maxBlockCount): the device memory is a fixed set of blocks, sub-allocated by VMA.
+// A full pool fails the allocation (VK_ERROR_OUT_OF_DEVICE_MEMORY).
+struct VulkanSCMemoryPool
+{
+	const char* name;
+	VmaMemoryUsage usage;
+	// The size of the pool: blockCount blocks of blockSize bytes, from the peaks the Vulkan SC build
+	// measured (reportVulkanSCMemoryPools) with the high profile and the long battle on the emulation ICD,
+	// with headroom for larger maps and mods. A block must hold the largest single allocation.
+	VkDeviceSize blockSize;
+	size_t blockCount;
+	VmaPool pool = VK_NULL_HANDLE;
+	uint32_t memoryTypeIndex = 0;
+	VkDeviceSize peakUsedBytes = 0;
+};
+
+static std::array<VulkanSCMemoryPool, 4> vulkanSCMemoryPools = {{
+	{ "device-local buffers", VMA_MEMORY_USAGE_GPU_ONLY, 64 * 1024 * 1024, 1 },        // peak 19 MB
+	{ "device-local images", VMA_MEMORY_USAGE_GPU_ONLY, 128 * 1024 * 1024, 3 },        // peak 153 MB
+	{ "streamed (host to device)", VMA_MEMORY_USAGE_CPU_TO_GPU, 8 * 1024 * 1024, 1 },  // peak 2.6 MB
+	{ "staging", VMA_MEMORY_USAGE_CPU_ONLY, 64 * 1024 * 1024, 2 },                     // peak 53 MB (texture loading)
+}};
+constexpr size_t vulkanSCBufferPool = 0;
+constexpr size_t vulkanSCImagePool = 1;
+constexpr size_t vulkanSCStreamedPool = 2;
+constexpr size_t vulkanSCStagingPool = 3;
+#endif
+
+// In the Vulkan SC build, puts the allocation in the pool for its usage. The desktop build uses VMA's default pools.
+static void selectMemoryPool(VmaAllocationCreateInfo& allocInfo, bool forImage)
+{
+#if defined(WZ_VULKANSC)
+	size_t index = vulkanSCBufferPool;
+	switch (allocInfo.usage)
+	{
+		case VMA_MEMORY_USAGE_GPU_ONLY: index = (forImage) ? vulkanSCImagePool : vulkanSCBufferPool; break;
+		case VMA_MEMORY_USAGE_CPU_TO_GPU: index = vulkanSCStreamedPool; break;
+		case VMA_MEMORY_USAGE_CPU_ONLY: index = vulkanSCStagingPool; break;
+		default:
+			ASSERT(false, "No Vulkan SC memory pool for VMA usage %d", static_cast<int>(allocInfo.usage));
+			break;
+	}
+	allocInfo.pool = vulkanSCMemoryPools[index].pool;
+#else
+	(void)allocInfo;
+	(void)forImage;
+#endif
+}
+
 // MARK: BlockBufferAllocator
 
 BlockBufferAllocator::BlockBufferAllocator(VmaAllocator allocator, uint32_t minimumBlockSize, const vk::BufferUsageFlags& usageFlags, const VmaAllocationCreateInfo& allocInfo, bool autoMap /* = false */)
@@ -697,7 +752,9 @@ void BlockBufferAllocator::allocateNewBlock(uint32_t minimumSize)
 
 	Block newBlock;
 	newBlock.size = newBlockSize;
-	vk::Result result = static_cast<vk::Result>(vmaCreateBuffer(allocator, reinterpret_cast<const VkBufferCreateInfo*>( &bufferCreateInfo ), &allocInfo, reinterpret_cast<VkBuffer*>( &newBlock.buffer ), &newBlock.allocation, nullptr));
+	VmaAllocationCreateInfo blockAllocInfo = allocInfo;
+	selectMemoryPool(blockAllocInfo, false);
+	vk::Result result = static_cast<vk::Result>(vmaCreateBuffer(allocator, reinterpret_cast<const VkBufferCreateInfo*>( &bufferCreateInfo ), &blockAllocInfo, reinterpret_cast<VkBuffer*>( &newBlock.buffer ), &newBlock.allocation, nullptr));
 	if (result != vk::Result::eSuccess)
 	{
 		// Failed to allocate memory!
@@ -853,13 +910,15 @@ void BlockBufferAllocator::clean()
 // MARK: perFrameResources_t
 
 #if defined(WZ_VULKANSC)
-// Vulkan SC reserves every descriptor set at device creation, and a pool cannot be destroyed. The desktop
-// build measured at most 96 combined image sampler sets and 32 uniform buffer sets in one frame.
-constexpr uint32_t vulkanSCDescriptorPoolMaxSets = 1024;
+// Vulkan SC reserves every descriptor set at device creation, and a pool cannot be destroyed. The Vulkan SC
+// build measured at most 106 combined image sampler sets and 32 uniform buffer sets in one frame.
+constexpr uint32_t vulkanSCDescriptorPoolMaxSets = 512;
 constexpr uint32_t descriptorPoolMaxSetsDefault = vulkanSCDescriptorPoolMaxSets;
-// Vulkan SC reserves command buffer memory when a command pool is made (VkCommandPoolMemoryReservationCreateInfo)
-constexpr uint64_t vulkanSCDrawCommandBufferReservedSize = 32 * 1024 * 1024;
-constexpr uint64_t vulkanSCCopyCommandBufferReservedSize = 8 * 1024 * 1024;
+// Vulkan SC reserves command buffer memory when a command pool is made (VkCommandPoolMemoryReservationCreateInfo).
+// The emulation ICD measured at most 41 KB for the draw buffer and 65 KB for the copy buffer in one frame
+// (vkGetCommandPoolMemoryConsumption); another implementation can count differently, so measure on it.
+constexpr uint64_t vulkanSCDrawCommandBufferReservedSize = 1024 * 1024;
+constexpr uint64_t vulkanSCCopyCommandBufferReservedSize = 1024 * 1024;
 #else
 constexpr uint32_t descriptorPoolMaxSetsDefault = 10000;
 #endif
@@ -1219,6 +1278,21 @@ void buffering_mechanism::swap(vk::Device dev, const WZ_vk::DispatchLoaderDynami
 		handleUnrecoverableError(vk::Result::eTimeout);
 	}
 	dev.resetFences(fences, vkDynLoader);
+#if defined(WZ_VULKANSC)
+	{
+		// The memory each command buffer used, before the pool reset returns it (VkCommandPoolMemoryReservationCreateInfo)
+		static void* getConsumption = reinterpret_cast<void*>(vkDynLoader.vkGetDeviceProcAddr(static_cast<VkDevice>(dev), "vkGetCommandPoolMemoryConsumption"));
+		auto& frame = buffering_mechanism::get_current_resources();
+		const auto consumption = [&](vk::CommandPool pool, vk::CommandBuffer commandBuffer) -> uint64_t {
+			const VkCommandPool poolHandle = static_cast<VkCommandPool>(pool);
+			uint64_t poolValue = 0;
+			memcpy(&poolValue, &poolHandle, sizeof(poolHandle));
+			return gfx_api::vk::sc::commandBufferMemoryConsumption(static_cast<VkDevice>(dev), getConsumption, poolValue, static_cast<VkCommandBuffer>(commandBuffer));
+		};
+		frame.peakDrawCommandBufferBytes = std::max(frame.peakDrawCommandBufferBytes, consumption(frame.pool, frame.cmdDraw));
+		frame.peakCopyCommandBufferBytes = std::max(frame.peakCopyCommandBufferBytes, consumption(frame.copyPool, frame.cmdCopy));
+	}
+#endif
 	buffering_mechanism::get_current_resources().resetDescriptorPools();
 	dev.resetCommandPool(buffering_mechanism::get_current_resources().pool, vk::CommandPoolResetFlagBits(), vkDynLoader);
 	dev.resetCommandPool(buffering_mechanism::get_current_resources().copyPool, vk::CommandPoolResetFlagBits(), vkDynLoader);
@@ -2243,6 +2317,7 @@ void VkBuf::allocateBufferObject(const std::size_t& requestedSize)
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, false);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateBuffer(root->allocator, reinterpret_cast<const VkBufferCreateInfo*>( &bufferCreateInfo ), &allocInfo, reinterpret_cast<VkBuffer*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2432,6 +2507,7 @@ VkTexture::VkTexture(const VkRoot& root, const std::size_t& mipmap_count, const 
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2487,6 +2563,7 @@ VkDepthMapImage::VkDepthMapImage(const VkRoot& root, const std::size_t& _layer_c
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2720,6 +2797,7 @@ VkRenderedImage::VkRenderedImage(const VkRoot& root, size_t width, size_t height
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2899,6 +2977,7 @@ VkTextureArray::VkTextureArray(const VkRoot& root, size_t mipmap_count, size_t l
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -3082,9 +3161,16 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 		psoID = existingPSOId->psoID;
 	}
 
-	if (!canCreatePipelines())
+#if defined(WZ_VULKANSC)
+	// Vulkan SC: register the recipe, and build it from the pipeline cache when it is first bound
+	// (bind_pipeline), where a pipeline the cache does not have skips its draws instead of failing.
+	const bool buildWhenRegistered = false;
+#else
+	const bool buildWhenRegistered = canCreatePipelines();
+#endif
+	if (!buildWhenRegistered)
 	{
-		// Register the recipe without building it; bind_pipeline() then skips its draws
+		// Register the recipe without building it
 		if (!psoID.has_value())
 		{
 			createdPipelines.emplace_back(createInfo, gfx_api::vk::pipelineRecipeName(createInfo), renderPasses.size());
@@ -4206,6 +4292,10 @@ void VkRoot::shutdown()
 	// destroy allocator
 	if (allocator != VK_NULL_HANDLE)
 	{
+#if defined(WZ_VULKANSC)
+		reportVulkanSCMemoryPools((validationLayer) ? LOG_INFO : LOG_3D);
+		destroyVulkanSCMemoryPools();
+#endif
 		vmaDestroyAllocator(allocator);
 		allocator = VK_NULL_HANDLE;
 	}
@@ -5574,43 +5664,42 @@ bool VkRoot::getQueueFamiliesInfo()
 #if defined(WZ_VULKANSC)
 
 // The most objects of each type that are alive at one time (VkDeviceObjectReservationCreateInfo).
-// Provisional (phase 1 of the Vulkan SC plan): about twice the peaks the desktop build measured
-// (gfx_api::vk::reportObjectCounters) with every graphics effect on. Memory, command pools,
-// descriptor pools, query pools, and the swapchain are never freed in Vulkan SC, so for them the
-// count is the total ever made.
+// From the peaks the Vulkan SC build measured (gfx_api::vk::reportObjectCounters) with the high profile and
+// the long battle on the emulation ICD, with headroom. Memory, command pools, descriptor pools, query pools,
+// and the swapchain are never freed in Vulkan SC, so for them the count is the total ever made.
 gfx_api::vk::sc::DeviceReservation VkRoot::vulkanSCDeviceReservation() const
 {
 	gfx_api::vk::sc::DeviceReservation r;
-	r.semaphoreRequestCount = 32;
-	r.commandBufferRequestCount = 16;
-	r.fenceRequestCount = 16;
-	r.deviceMemoryRequestCount = 512;
-	r.bufferRequestCount = 8192;
-	r.imageRequestCount = 1024;
+	r.semaphoreRequestCount = 16;             // peak 5
+	r.commandBufferRequestCount = 8;          // peak 5
+	r.fenceRequestCount = 8;                  // peak 2
+	r.deviceMemoryRequestCount = 32;          // 16 in total: the memory pool blocks and 4 render targets
+	r.bufferRequestCount = 4096;              // peak 3006 (the game's models)
+	r.imageRequestCount = 512;                // peak 209
 	r.queryPoolRequestCount = 1;
-	r.imageViewRequestCount = 1024;
-	r.layeredImageViewRequestCount = 16;
+	r.imageViewRequestCount = 512;            // peak 215
+	r.layeredImageViewRequestCount = 8;       // peak 3
 	r.pipelineCacheRequestCount = 1;
-	r.pipelineLayoutRequestCount = 32;
-	r.renderPassRequestCount = 32;
-	r.graphicsPipelineRequestCount = 256;
-	r.descriptorSetLayoutRequestCount = 32;
-	r.samplerRequestCount = 16;
+	r.pipelineLayoutRequestCount = 16;        // peak 7
+	r.renderPassRequestCount = 32;            // peak 13
+	r.graphicsPipelineRequestCount = 0;       // from the pipeline cache, below
+	r.descriptorSetLayoutRequestCount = 16;   // peak 7
+	r.samplerRequestCount = 16;               // peak 7
 	r.descriptorPoolRequestCount = 2 * MAX_FRAMES_IN_FLIGHT;
 	r.descriptorSetRequestCount = 2 * MAX_FRAMES_IN_FLIGHT * vulkanSCDescriptorPoolMaxSets;
-	r.framebufferRequestCount = 64;
+	r.framebufferRequestCount = 64;           // peak 26
 	r.commandPoolRequestCount = 2 * MAX_FRAMES_IN_FLIGHT;
 	r.surfaceRequestCount = 1;
 	r.swapchainRequestCount = 1;
 	r.displayModeRequestCount = 1;
-	r.subpassDescriptionRequestCount = 32;
-	r.attachmentDescriptionRequestCount = 96;
-	r.descriptorSetLayoutBindingRequestCount = 128;
-	r.descriptorSetLayoutBindingLimit = 32;
-	// A view of an image of 16384 texels has at most 15 mip levels
+	r.subpassDescriptionRequestCount = 32;    // peak 13
+	r.attachmentDescriptionRequestCount = 64; // peak 21
+	r.descriptorSetLayoutBindingRequestCount = 64; // peak 27
+	r.descriptorSetLayoutBindingLimit = 32;   // peak 16
+	// A view of an image of 16384 texels has at most 15 mip levels (peak 12)
 	r.maxImageViewMipLevels = 15;
-	r.maxImageViewArrayLayers = 256;
-	r.maxLayeredImageViewMipLevels = 15;
+	r.maxImageViewArrayLayers = 256;          // peak 78 (terrain texture arrays)
+	r.maxLayeredImageViewMipLevels = 15;      // peak 11
 	r.maxTimestampQueriesPerPool = 2 * GPU_TIMING_SLOTS;
 	if (!vulkanSCPipelineCacheData.empty())
 	{
@@ -5822,6 +5911,12 @@ bool VkRoot::createLogicalDevice()
 #if defined(WZ_VULKANSC)
 	installVulkanSCRemovedEntryPoints();
 	logVulkanSCProperties();
+#endif
+
+	// Count the objects of each type (before createAllocator() copies the entry points into VMA).
+	gfx_api::vk::installObjectCounters(vkDynLoader);
+
+#if defined(WZ_VULKANSC)
 	if (!vulkanSCPipelineCacheData.empty())
 	{
 		const uint64_t cacheHandle = gfx_api::vk::sc::createPipelineCache(static_cast<VkDevice>(dev), reinterpret_cast<void*>(vkDynLoader.vkCreatePipelineCache),
@@ -5831,9 +5926,6 @@ bool VkRoot::createLogicalDevice()
 		vulkanSCPipelineCache = vk::PipelineCache(cache);
 	}
 #endif
-
-	// Count the objects of each type (before createAllocator() copies the entry points into VMA).
-	gfx_api::vk::installObjectCounters(vkDynLoader);
 
 	// Before any render pass, layout, or pipeline exists, so that the export records all of them.
 	pipelineJsonExport = gfx_api::vk::PipelineJsonExport::createFromEnvironment();
@@ -5938,8 +6030,109 @@ bool VkRoot::createAllocator()
 	{
 		debug(LOG_ERROR, "vmaCreateAllocator failed with error: %s", to_string(static_cast<vk::Result>(result)).c_str());
 	}
+#if defined(WZ_VULKANSC)
+	if (result == VK_SUCCESS && !createVulkanSCMemoryPools())
+	{
+		return false;
+	}
+#endif
 	return result == VK_SUCCESS;
 }
+
+#if defined(WZ_VULKANSC)
+
+bool VkRoot::createVulkanSCMemoryPools()
+{
+	for (size_t i = 0; i < vulkanSCMemoryPools.size(); ++i)
+	{
+		VulkanSCMemoryPool& pool = vulkanSCMemoryPools[i];
+		VmaAllocationCreateInfo allocInfo = {};
+		allocInfo.usage = pool.usage;
+		VkResult findResult = VK_SUCCESS;
+		if (i == vulkanSCImagePool)
+		{
+			VkImageCreateInfo imageInfo = {};
+			imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+			imageInfo.imageType = VK_IMAGE_TYPE_2D;
+			imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+			imageInfo.extent = {256, 256, 1};
+			imageInfo.mipLevels = 1;
+			imageInfo.arrayLayers = 1;
+			imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+			imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+			imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+			findResult = vmaFindMemoryTypeIndexForImageInfo(allocator, &imageInfo, &allocInfo, &pool.memoryTypeIndex);
+		}
+		else
+		{
+			VkBufferCreateInfo bufferInfo = {};
+			bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+			bufferInfo.size = 64 * 1024;
+			bufferInfo.usage = (i == vulkanSCStagingPool) ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+				: (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+			findResult = vmaFindMemoryTypeIndexForBufferInfo(allocator, &bufferInfo, &allocInfo, &pool.memoryTypeIndex);
+		}
+		if (findResult != VK_SUCCESS)
+		{
+			debug(LOG_ERROR, "Vulkan SC: no memory type for the %s pool: %s", pool.name, to_string(static_cast<vk::Result>(findResult)).c_str());
+			return false;
+		}
+
+		VmaPoolCreateInfo poolInfo = {};
+		poolInfo.memoryTypeIndex = pool.memoryTypeIndex;
+		poolInfo.blockSize = pool.blockSize;
+		poolInfo.minBlockCount = pool.blockCount;
+		poolInfo.maxBlockCount = pool.blockCount;
+		const VkResult poolResult = vmaCreatePool(allocator, &poolInfo, &pool.pool);
+		if (poolResult != VK_SUCCESS)
+		{
+			debug(LOG_ERROR, "Vulkan SC: could not make the %s pool (%zu blocks of %" PRIu64 " bytes): %s", pool.name, pool.blockCount,
+				static_cast<uint64_t>(pool.blockSize), to_string(static_cast<vk::Result>(poolResult)).c_str());
+			return false;
+		}
+		pool.peakUsedBytes = 0;
+		debug(LOG_3D, "Vulkan SC memory pool %s: memory type %u, %zu blocks of %" PRIu64 " bytes", pool.name, pool.memoryTypeIndex, pool.blockCount, static_cast<uint64_t>(pool.blockSize));
+	}
+	return true;
+}
+
+void VkRoot::updateVulkanSCMemoryPoolPeaks()
+{
+	for (auto& pool : vulkanSCMemoryPools)
+	{
+		if (pool.pool != VK_NULL_HANDLE)
+		{
+			VmaStatistics statistics = {};
+			vmaGetPoolStatistics(allocator, pool.pool, &statistics);
+			pool.peakUsedBytes = std::max(pool.peakUsedBytes, statistics.allocationBytes);
+		}
+	}
+}
+
+void VkRoot::reportVulkanSCMemoryPools(code_part part)
+{
+	updateVulkanSCMemoryPoolPeaks();
+	debug(part, "Vulkan SC memory pools: peak used of the pool size");
+	for (const auto& pool : vulkanSCMemoryPools)
+	{
+		debug(part, "  %-26s memory type %u: %" PRIu64 " of %" PRIu64 " bytes", pool.name, pool.memoryTypeIndex,
+			static_cast<uint64_t>(pool.peakUsedBytes), static_cast<uint64_t>(pool.blockSize * pool.blockCount));
+	}
+}
+
+void VkRoot::destroyVulkanSCMemoryPools()
+{
+	for (auto& pool : vulkanSCMemoryPools)
+	{
+		if (pool.pool != VK_NULL_HANDLE)
+		{
+			vmaDestroyPool(allocator, pool.pool);
+			pool.pool = VK_NULL_HANDLE;
+		}
+	}
+}
+
+#endif // defined(WZ_VULKANSC)
 
 void VkRoot::getQueues()
 {
@@ -6644,7 +6837,8 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 	auto& pipelineInfo = createdPipelines[newPSOId->psoID];
 	auto& renderPass = renderPasses[currentRenderPassId];
 	VkPSO* newPSO = pipelineInfo.renderPassPSO[renderPass.psoSlot];
-	if (!newPSO && !canCreatePipelines())
+	const auto pipelineKey = std::make_pair(newPSOId->psoID, renderPass.psoSlot);
+	if (!newPSO && (!canCreatePipelines() || unavailablePipelines.count(pipelineKey) != 0))
 	{
 		skipDrawsWithoutPipeline = true;
 		currentPSO = nullptr;
@@ -6655,7 +6849,22 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 	{
 		// Must build this pipeline for a render pass that is not compatible with any it was built for
 		debug(LOG_3D, "Built pipeline %s for render pass class %s", pipelineInfo.name.c_str(), renderPass.className.c_str());
-		newPSO = new VkPSO(dev, physDeviceProps.limits, pipelineInfo.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
+		try {
+			newPSO = new VkPSO(dev, physDeviceProps.limits, pipelineInfo.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
+		}
+		catch (const vk::SystemError&)
+		{
+#if defined(WZ_VULKANSC)
+			// Not in the pipeline cache (VkPSO logged its name): run the export session that draws it
+			// (tools/vulkansc/export_pipelines.sh) and build the cache again. Until then, skip its draws.
+			unavailablePipelines.insert(pipelineKey);
+			skipDrawsWithoutPipeline = true;
+			currentPSO = nullptr;
+			return;
+#else
+			throw;
+#endif
+		}
 		pipelineInfo.renderPassPSO[renderPass.psoSlot] = newPSO;
 	}
 	if (currentPSO != newPSO)
@@ -7187,6 +7396,7 @@ void VkRoot::destroyDynamicRenderPasses()
 	}
 	renderPasses.clear();
 	destroyRenderPassIndexedPSOs(0);
+	unavailablePipelines.clear();
 	_renderPassLayoutCache.clear();
 }
 
@@ -7564,6 +7774,9 @@ bool VkRoot::canRecordSwapchainDraws() const
 
 void VkRoot::finishScreenFrame()
 {
+#if defined(WZ_VULKANSC)
+	updateVulkanSCMemoryPoolPeaks();
+#endif
 	// Debug aid: WZ_VULKAN_DEBUG_SCREENSHOT=<frame>:<file.png> saves that frame as a PNG
 	// (the file name is relative to the write directory, --configdir).
 	static const std::pair<size_t, std::string> debugScreenshot = []() -> std::pair<size_t, std::string> {
@@ -8390,6 +8603,16 @@ void VkRoot::reportFrameResourcePeaks(code_part part) const
 		staging, streamedVertex, uniform, lightData);
 	debug(part, "  combined image sampler: %zu sets, %zu descriptors, %zu pools; uniform buffer dynamic: %zu sets, %zu descriptors, %zu pools",
 		imageSamplerSets, imageSamplerDescriptors, imageSamplerPools, uniformSets, uniformDescriptors, uniformPools);
+#if defined(WZ_VULKANSC)
+	uint64_t drawCommandBuffer = 0, copyCommandBuffer = 0;
+	for (const auto& frameResources : buffering_mechanism::perFrameResources)
+	{
+		drawCommandBuffer = std::max(drawCommandBuffer, frameResources->peakDrawCommandBufferBytes);
+		copyCommandBuffer = std::max(copyCommandBuffer, frameResources->peakCopyCommandBufferBytes);
+	}
+	debug(part, "  command buffer memory: draw %" PRIu64 " bytes, copy %" PRIu64 " bytes (reserved %" PRIu64 " and %" PRIu64 ")",
+		drawCommandBuffer, copyCommandBuffer, vulkanSCDrawCommandBufferReservedSize, vulkanSCCopyCommandBufferReservedSize);
+#endif
 }
 
 bool VkRoot::debugRecompileAllPipelines()

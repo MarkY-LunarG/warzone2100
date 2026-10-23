@@ -46,6 +46,7 @@
 #include <algorithm>
 #include <sstream>
 #include <map>
+#include <set>
 #include <vector>
 #include <limits>
 #include <unordered_map>
@@ -260,6 +261,11 @@ struct perFrameResources_t
 	// each is reset as a whole. cmdCopy has a pool of its own because it is reset while cmdDraw is recording.
 	vk::CommandPool pool;
 	vk::CommandPool copyPool;
+#if defined(WZ_VULKANSC)
+	// The most memory cmdDraw and cmdCopy used in one frame (vkGetCommandPoolMemoryConsumption)
+	uint64_t peakDrawCommandBufferBytes = 0;
+	uint64_t peakCopyCommandBufferBytes = 0;
+#endif
 	vk::Fence previousSubmission;
 	vk::Semaphore imageAcquireSemaphore;
 	std::vector</*WZ_vk::UniqueBuffer*/vk::Buffer> buffer_to_delete;
@@ -829,11 +835,17 @@ struct VkRoot final : gfx_api::context
 	// draws are skipped (skipDrawsWithoutPipeline).
 	bool canCreatePipelines() const;
 	bool skipDrawsWithoutPipeline = false;
+	// (recipe, render pass slot) pairs that could not be built (Vulkan SC: not in the pipeline cache)
+	std::set<std::pair<size_t, size_t>> unavailablePipelines;
 #if defined(WZ_VULKANSC)
 	gfx_api::vk::sc::DeviceReservation vulkanSCDeviceReservation() const;
 	void installVulkanSCRemovedEntryPoints();
 	void logVulkanSCProperties();
 	bool loadVulkanSCPipelineCache();
+	bool createVulkanSCMemoryPools();
+	void updateVulkanSCMemoryPoolPeaks();
+	void reportVulkanSCMemoryPools(code_part part);
+	void destroyVulkanSCMemoryPools();
 	// The pipeline cache: its data must stay where it is while the device lives (application storage)
 	std::vector<char> vulkanSCPipelineCacheData;
 	uint32_t vulkanSCPipelineCount = 0;

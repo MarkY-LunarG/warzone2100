@@ -27,9 +27,15 @@ PROFILE="high"
 OUTPUT_DIR=""
 CHECK=0
 
-# The sessions: skirmish settings files in data/mp/tests. Add a session when the SC build reports a
-# pipeline that is not in the cache.
-SESSIONS=(highground.json longbattle.json)
+# The sessions: a skirmish settings file in data/mp/tests, then any more game arguments after "|".
+# Add a session when the Vulkan SC build logs "could not create pipeline ... from the pipeline cache".
+# The last one watches the long battle with the automatic camera, so that the fighting is on screen:
+# health, reload, and build progress bars draw only then (the batched rectangles, "Rect instanced").
+SESSIONS=(
+	"highground.json"
+	"longbattle.json"
+	"longbattle.json|--autocamera --autogamespeed=10"
+)
 
 usage()
 {
@@ -88,23 +94,28 @@ fi
 mkdir -p "${EXPORT_DIR}"
 rm -f "${EXPORT_DIR}"/wz2100.pc.*.json "${EXPORT_DIR}/wz2100_pipelines.json"
 
+session_index=0
 for session in "${SESSIONS[@]}"; do
-	config_dir="${WORK_DIR}/config_${session%.json}"
+	session_index=$((session_index + 1))
+	skirmish="${session%%|*}"
+	read -r -a extra_args <<< "$( [[ "${session}" == *"|"* ]] && echo "${session#*|}" )"
+	config_dir="${WORK_DIR}/config_${session_index}"
+	log="${WORK_DIR}/session_${session_index}.log"
 	mkdir -p "${config_dir}"
 	cp "${PROFILE_FILE}" "${config_dir}/config"
-	echo "==> ${session} (profile ${PROFILE})"
+	echo "==> ${skirmish} ${extra_args[*]} (profile ${PROFILE})"
 	if ! WZ_VULKAN_EXPORT_PIPELINES="${EXPORT_DIR}" "${GAME}" "--configdir=${config_dir}" \
-		"--skirmish=${session}" --autogame --gfxbackend=vulkan > "${WORK_DIR}/${session%.json}.log" 2>&1; then
-		echo "error: the ${session} session failed; its log:" >&2
-		tail -20 "${WORK_DIR}/${session%.json}.log" >&2
+		"--skirmish=${skirmish}" --autogame --gfxbackend=vulkan "${extra_args[@]}" > "${log}" 2>&1; then
+		echo "error: the session failed; its log:" >&2
+		tail -20 "${log}" >&2
 		exit 1
 	fi
-	if ! grep -q "Pipeline JSON export: .* pipelines in this run" "${WORK_DIR}/${session%.json}.log"; then
-		echo "error: the ${session} session wrote no pipeline JSON. Did it use the Vulkan backend? Its log:" >&2
-		tail -20 "${WORK_DIR}/${session%.json}.log" >&2
+	if ! grep -q "Pipeline JSON export: .* pipelines in this run" "${log}"; then
+		echo "error: the session wrote no pipeline JSON. Did it use the Vulkan backend? Its log:" >&2
+		tail -20 "${log}" >&2
 		exit 1
 	fi
-	grep -o "Pipeline JSON export: .*" "${WORK_DIR}/${session%.json}.log"
+	grep -o "Pipeline JSON export: .*" "${log}"
 done
 
 if [[ ${CHECK} -eq 0 ]]; then
