@@ -24,6 +24,9 @@
 
 #include "lib/ivis_opengl/gfx_api_vk.h"
 #include <SDL3/SDL_video.h>
+#if defined(WZ_VULKANSC)
+#include <SDL3/SDL_loadso.h>
+#endif
 
 #if defined(WZ_VULKAN_ENABLED) && defined(HAVE_SDL_VULKAN_H)
 
@@ -31,6 +34,9 @@ class sdl_Vulkan_Impl final : public gfx_api::backend_Vulkan_Impl
 {
 public:
 	sdl_Vulkan_Impl(SDL_Window* window, bool allowImplicitLayers);
+#if defined(WZ_VULKANSC)
+	~sdl_Vulkan_Impl();
+#endif
 
 	virtual PFN_vkGetInstanceProcAddr getVkGetInstanceProcAddr() override;
 	virtual bool getRequiredInstanceExtensions(std::vector<const char*> &output) override;
@@ -44,6 +50,14 @@ public:
 private:
 	SDL_Window* window;
 	bool m_allowImplicitLayers = false;
+#if defined(WZ_VULKANSC)
+	// Vulkan SC: the loader is opened here (SDL knows only the Vulkan loader), and the surface is a
+	// display plane surface (VK_KHR_display), whose size is the display mode's.
+	SDL_SharedObject* m_vulkanSCLibrary = nullptr;
+	PFN_vkGetInstanceProcAddr m_getInstanceProcAddr = nullptr;
+	int m_displayWidth = 0;
+	int m_displayHeight = 0;
+#endif
 };
 
 #endif // defined(WZ_VULKAN_ENABLED) && defined(HAVE_SDL_VULKAN_H)

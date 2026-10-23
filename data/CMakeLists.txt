@@ -248,13 +248,18 @@ if(GLSLC)
 	message(STATUS "Found glslc: ${GLSLC}")
 	set(_output_dir "${CMAKE_CURRENT_BINARY_DIR}/base/shaders/vk")
 	file(MAKE_DIRECTORY "${_output_dir}")
+	# Vulkan SC 1.0 is based on Vulkan 1.2
+	set(_glslc_target_env)
+	if(WZ_ENABLE_BACKEND_VULKANSC)
+		set(_glslc_target_env "--target-env=vulkan1.2")
+	endif()
 	foreach(SHADER ${VK_SHADERS})
 		get_filename_component(SHADER_FILE_PATH ${SHADER} DIRECTORY)
 		get_filename_component(SHADER_FILE ${SHADER} NAME)
 		set(_output_name "${SHADER_FILE}.spv")
 		add_custom_command(OUTPUT "${_output_dir}/${_output_name}"
 			COMMAND "${GLSLC}"
-			ARGS "-c" "-I" "${_vk_generated_dir}" "${SHADER}" "-o" "${_output_dir}/${_output_name}"
+			ARGS "-c" ${_glslc_target_env} "-I" "${_vk_generated_dir}" "${SHADER}" "-o" "${_output_dir}/${_output_name}"
 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/base/shaders/vk"
 			DEPENDS "${SHADER}" "${_vk_generated_constants}" ${VK_SHADER_INCLUDES}
 			VERBATIM

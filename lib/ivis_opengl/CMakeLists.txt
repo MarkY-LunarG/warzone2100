@@ -234,6 +234,21 @@ if(WZ_ENABLE_BACKEND_VULKAN)
 		endif()
 		# The pipeline exporter switches on VkStructureType with the Vulkan SC-only sType, which the
 		# desktop header's enum does not have (see 3rdparty/vulkansc_samples/README.md)
+		if(WZ_ENABLE_BACKEND_VULKANSC)
+			find_path(WZ_VULKANSC_INCLUDE_DIR
+				NAMES vulkan/vulkan_sc_core.h
+				HINTS "$ENV{VULKANSC_SDK}/include"
+				DOC "The include directory of the Vulkan SC headers (VulkanSC-Headers)")
+			if(NOT WZ_VULKANSC_INCLUDE_DIR)
+				message(FATAL_ERROR "WZ_ENABLE_BACKEND_VULKANSC: vulkan/vulkan_sc_core.h not found. Set VULKANSC_SDK or WZ_VULKANSC_INCLUDE_DIR.")
+			endif()
+			message(STATUS "Vulkan SC headers: ${WZ_VULKANSC_INCLUDE_DIR}")
+			target_compile_definitions(ivis-opengl PUBLIC "-DWZ_VULKANSC")
+			# The bridge is the one file that includes <vulkan/vulkan_sc.h>. The desktop include directory
+			# has no vulkan_sc.h, so the bridge finds the Vulkan SC headers there.
+			target_sources(ivis-opengl PRIVATE "vk/vksc_bridge.cpp" "vk/vksc_bridge.h")
+			set_source_files_properties("vk/vksc_bridge.cpp" PROPERTIES INCLUDE_DIRECTORIES "${WZ_VULKANSC_INCLUDE_DIR}")
+		endif()
 		CHECK_CXX_COMPILER_FLAG(-Wno-switch COMPILER_SUPPORTS_WNO_SWITCH)
 		if(COMPILER_SUPPORTS_WNO_SWITCH)
 			set_source_files_properties("3rdparty/vulkansc_samples/VulkanSCPipelineExport.cpp" PROPERTIES COMPILE_OPTIONS -Wno-switch)
