@@ -91,6 +91,7 @@ private:
 	std::string _directory;
 	std::unique_ptr<vks::PipelineExporter> _exporter;
 	std::map<std::string, ManifestEntry> _manifest;
+	size_t _documentsToWrite = 0;
 };
 
 } // namespace gfx_api::vk

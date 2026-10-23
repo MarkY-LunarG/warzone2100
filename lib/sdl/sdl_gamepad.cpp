@@ -25,6 +25,7 @@
 #include "lib/framework/file.h"
 #include "lib/framework/input.h"
 #include "sdl_gamepad.h"
+#include "sdl_gamepad_script.h"
 #include "sdl_backend_private.h"
 #include "src/warzoneconfig.h"
 #include "lib/ivis_opengl/screen.h"
@@ -440,10 +441,12 @@ void wzGamepadInit()
 	subsystemInitialized = true;
 	// devices connected right now arrive as SDL_EVENT_GAMEPAD_ADDED events
 	debug(LOG_INPUT, "SDL gamepad subsystem initialized");
+	wzGamepadScriptInit();
 }
 
 void wzGamepadShutdown()
 {
+	wzGamepadScriptShutdown();
 	for (const auto& pad : openGamepads)
 	{
 		SDL_CloseGamepad(pad.handle);
@@ -1158,6 +1161,9 @@ static void updateSyntheticInput()
 
 void wzGamepadUpdate()
 {
+	// Before the active pad is read: the script's virtual gamepad becomes the active pad through its input
+	wzGamepadScriptUpdate();
+
 	const OpenGamepad* activePad = activeGamepadEntry();
 	if (!activePad)
 	{

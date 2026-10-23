@@ -35,6 +35,17 @@
             ],
             "specialization": "m1.f5.c3.l0"
         },
+        "Component program/b2.d0.m255.o0.s2.c0.p2/d6349227/44x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.cb9ce1088c1a1d64071d445bbb15bc41.json",
+            "identifier": "cb9ce1088c1a1d64071d445bbb15bc41",
+            "recipe": "Component program/b2.d0.m255.o0.s2.c0.p2/d6349227",
+            "renderPassClass": "44x1.130x1/a846c127",
+            "shaderFiles": [
+                "tcmask.vert.spv",
+                "tcmask.frag.spv"
+            ],
+            "specialization": "-"
+        },
         "Component program/b2.d0.m255.o0.s2.c2.p2/ba645b92/126x1/25837de1/-": {
             "document": "wz2100.pc.782e7084093b87a1ff4f4e0efe1d5dbe.json",
             "identifier": "782e7084093b87a1ff4f4e0efe1d5dbe",
@@ -215,6 +226,17 @@
             "document": "wz2100.pc.00f3c4d8ed1cc0f38c2f13037df819c6.json",
             "identifier": "00f3c4d8ed1cc0f38c2f13037df819c6",
             "recipe": "Textured rect program/b0.d3.m255.o0.s2.c0.p3/5e411fa7",
+            "renderPassClass": "44x1.130x1/a846c127",
+            "shaderFiles": [
+                "rect.vert.spv",
+                "texturedrect.frag.spv"
+            ],
+            "specialization": "-"
+        },
+        "Textured rect program/b0.d3.m255.o0.s2.c0.p3/f0fcf684/44x1.130x1/a846c127/-": {
+            "document": "wz2100.pc.451eb3c7f10c5b243111ef2bec930271.json",
+            "identifier": "451eb3c7f10c5b243111ef2bec930271",
+            "recipe": "Textured rect program/b0.d3.m255.o0.s2.c0.p3/f0fcf684",
             "renderPassClass": "44x1.130x1/a846c127",
             "shaderFiles": [
                 "rect.vert.spv",

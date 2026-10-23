@@ -1,0 +1,70 @@
+# Gamepad-only skirmish: title screen -> skirmish -> play -> quit, played on a virtual gamepad
+# (WZ_DEBUG_GAMEPAD_SCRIPT, lib/sdl/sdl_gamepad_script.h).
+# The positions are for a 960x540 screen: the Vulkan SC emulation display mode, or --resolution=960x540.
+
+# The controller layout screen shows on the first gamepad connection: Start closes it
+wait 120
+press start
+wait 60
+screenshot gamepad_1_title
+
+# Single Player, then Start Skirmish Game. Moves, not flicks: a flick must be released within 180 ms,
+# which a few frames on a slow device are not.
+moveto 478 252
+press a
+wait 60
+moveto 478 287
+press a
+wait 120
+screenshot gamepad_2_skirmish
+
+# Start Hosting, dismiss the "campaign videos are missing" notice, then READY
+moveto 334 421
+press a
+wait 120
+moveto 530 79
+press a
+wait 60
+moveto 743 57
+press a
+waitms 15000
+screenshot gamepad_3_ingame
+
+# Manufacture: build the first design; then the Build menu; B closes it
+moveto 72 433
+press a
+wait 60
+moveto 40 135
+press a
+wait 30
+screenshot gamepad_4_manufacture
+moveto 105 488
+press a
+wait 60
+screenshot gamepad_5_build
+press b
+wait 30
+
+# Scroll the view a little with the left stick at the screen edge
+moveto 940 270
+waitms 1500
+moveto 480 270
+wait 30
+
+# In-game menu: Quit, then Confirm
+press start
+wait 60
+screenshot gamepad_6_menu
+moveto 477 321
+press a
+wait 60
+moveto 481 279
+press a
+wait 180
+screenshot gamepad_7_title
+
+# Quit Game
+moveto 480 462
+press a
+waitms 10000
+fail Quit Game did not quit the game

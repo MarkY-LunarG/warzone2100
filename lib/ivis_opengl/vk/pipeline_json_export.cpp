@@ -57,6 +57,12 @@ std::string hexString(const uint8_t* bytes, size_t count)
 	return text;
 }
 
+// The document name the vulkansc-samples exporter writes a pipeline to
+std::string documentFileName(const std::string& identifier)
+{
+	return std::string(kApplicationName) + ".pc." + identifier + ".json";
+}
+
 } // anonymous namespace
 
 std::unique_ptr<PipelineJsonExport> PipelineJsonExport::createFromEnvironment()
@@ -111,12 +117,21 @@ void PipelineJsonExport::recordGraphicsPipeline(const std::string& name, const s
 	offlineInfo.matchControl = VK_PIPELINE_MATCH_CONTROL_APPLICATION_UUID_EXACT_MATCH;
 	offlineInfo.poolEntrySize = POOL_ENTRY_SIZE;
 
-	VkGraphicsPipelineCreateInfo exportedInfo = createInfo;
-	exportedInfo.pNext = &offlineInfo;
-	_exporter->recordGraphicsPipeline(name, exportedInfo, shaderFiles);
+	const std::string identifier = hexString(offlineInfo.pipelineIdentifier, VK_UUID_SIZE);
+
+	// An earlier run wrote the pipeline's document: keep it. Its render pass may differ from this run's
+	// in what does not matter to render pass compatibility (load operations, initial layouts), and the
+	// documents would then depend on the order of the runs.
+	if (!std::ifstream(_directory + "/" + documentFileName(identifier)).is_open())
+	{
+		VkGraphicsPipelineCreateInfo exportedInfo = createInfo;
+		exportedInfo.pNext = &offlineInfo;
+		_exporter->recordGraphicsPipeline(name, exportedInfo, shaderFiles);
+		++_documentsToWrite;
+	}
 
 	ManifestEntry& entry = _manifest[name];
-	entry.identifier = hexString(offlineInfo.pipelineIdentifier, VK_UUID_SIZE);
+	entry.identifier = identifier;
 	entry.recipe = recipe;
 	entry.renderPassClass = renderPassClass;
 	entry.specialization = specialization;
@@ -130,7 +145,7 @@ bool PipelineJsonExport::write()
 		debug(LOG_ERROR, "Pipeline JSON export: no pipelines were built");
 		return false;
 	}
-	if (!_exporter->write())
+	if (_documentsToWrite > 0 && !_exporter->write())
 	{
 		debug(LOG_ERROR, "Pipeline JSON export: writing the documents to %s failed (see the output above)", _directory.c_str());
 		return false;
@@ -160,7 +175,7 @@ bool PipelineJsonExport::write()
 		added += pipelines.contains(name) ? 0 : 1;
 		pipelines[name] = {
 			{"identifier", entry.identifier},
-			{"document", std::string(kApplicationName) + ".pc." + entry.identifier + ".json"},
+			{"document", documentFileName(entry.identifier)},
 			{"recipe", entry.recipe},
 			{"renderPassClass", entry.renderPassClass},
 			{"specialization", entry.specialization},
