@@ -679,9 +679,20 @@ uint32_t wzGetTicks()
 	return static_cast<uint32_t>(SDL_GetTicks());
 }
 
+// Headless runs have no window to show a dialog in. A Vulkan SC build shows none either: it presents to a
+// display, and takes input from a gamepad, which cannot answer an SDL message box; it logs the dialog instead.
+static bool wzDialogsSuppressed()
+{
+#if defined(WZ_VULKANSC)
+	return true;
+#else
+	return !WZbackend.has_value();
+#endif
+}
+
 void wzDisplayDialog(DialogType type, const char *title, const char *message)
 {
-	if (!WZbackend.has_value())
+	if (wzDialogsSuppressed())
 	{
 		// while this could be thread_local, thread_local may not yet be supported on all platforms properly
 		// and wzDisplayDialog should probably be called **only** on the main thread anyway
@@ -717,7 +728,7 @@ void wzDisplayDialog(DialogType type, const char *title, const char *message)
 // Returns 0 on failure, or the (clicked button index + 1)
 size_t wzDisplayDialogAdvanced(DialogType type, const char *title, const char *message, std::vector<std::string> buttonsText)
 {
-	if (!WZbackend.has_value())
+	if (wzDialogsSuppressed())
 	{
 		// while this could be thread_local, thread_local may not yet be supported on all platforms properly
 		// and wzDisplayDialog should probably be called **only** on the main thread anyway
@@ -2923,6 +2934,11 @@ bool shouldResetGfxBackendPrompt_internal(video_backend currentBackend, video_ba
 	   { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 2, "Not Now" },
 	};
 	std::string titleString = std::string("Warzone: Failed to ") + failureVerb + " " + failedToInitializeObject;
+	if (wzDialogsSuppressed())
+	{
+		debug(LOG_ERROR, "%s (%s)", titleString.c_str(), additionalErrorDetails.c_str());
+		return false;
+	}
 	std::string messageString = std::string("Failed to ") + failureVerb + " " + failedToInitializeObject + " for backend: " + to_display_string(currentBackend) + ".\n\n";
 	if (!additionalErrorDetails.empty())
 	{
@@ -3758,6 +3774,11 @@ void failedToInitializeAnyGraphicsBackendMessage_internal(const std::vector<std:
 		messageString += "\n\n";
 	}
 	messageString += _("Please update and/or reinstall your graphics drivers, and check your system settings.");
+	if (wzDialogsSuppressed())
+	{
+		debug(LOG_ERROR, "%s\n%s", titleString.c_str(), messageString.c_str());
+		return;
+	}
 	const SDL_MessageBoxData messageboxdata = {
 		SDL_MESSAGEBOX_ERROR, /* .flags */
 		WZwindow, /* .window */

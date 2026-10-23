@@ -205,6 +205,15 @@ bool sdl_Vulkan_Impl::createWindowSurface(VkInstance instance, VkSurfaceKHR* sur
 			}
 			m_displayWidth = static_cast<int>(createInfo.imageExtent.width);
 			m_displayHeight = static_cast<int>(createInfo.imageExtent.height);
+			// The game lays out its interface for the window's size, so the window gets the display mode's size.
+			// The display shows the frames, so the window is hidden: input comes from a gamepad. Debug aid:
+			// WZ_VULKANSC_SHOW_WINDOW=1 leaves it visible, for keyboard and mouse input at display coordinates.
+			SDL_SetWindowFullscreen(window, false);
+			SDL_SetWindowSize(window, m_displayWidth, m_displayHeight);
+			if (getenv("WZ_VULKANSC_SHOW_WINDOW") == nullptr)
+			{
+				SDL_HideWindow(window);
+			}
 			debug(LOG_INFO, "Vulkan SC display: %s, mode %dx%d at %.3f Hz, plane %u (physical device %u)",
 				(displays[0].displayName) ? displays[0].displayName : "(no name)", m_displayWidth, m_displayHeight,
 				static_cast<double>(bestMode->parameters.refreshRate) / 1000.0, planeIndex, deviceIndex);
