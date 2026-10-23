@@ -23,7 +23,7 @@
 #                      replayed, and gfxrecon-premium-info checks it (no faults, no error messages, every
 #                      pipeline cache source). Needs VULKANSC_LOADER: the layer forwards to the loader.
 #
-# Every test is an autogame with the high graphics profile (tools/vulkansc/profile_high.cfg), in a new
+# Every test is an autogame (or, for the gamepad test, a gamepad script) with the high graphics profile (tools/vulkansc/profile_high.cfg), in a new
 # config directory. The Vulkan SC tests run the desktop validation layer under the emulation ICD.
 # A test passes when the game plays to the end with no validation message, no error, no Vulkan SC
 # fault, no pipeline missing from the pipeline cache, and no Vulkan object alive at shutdown.
@@ -91,28 +91,34 @@ run_game()
 		shift
 	done
 	shift
+	# An autogame, unless a gamepad script plays the game
+	local autogame=(--autogame)
+	if [[ " ${env_vars[*]} " == *" WZ_DEBUG_GAMEPAD_SCRIPT="* ]]; then
+		autogame=()
+	fi
 	mkdir -p "${WORK_DIR}/${name}"
 	cp "${PROFILE_FILE}" "${WORK_DIR}/${name}/config"
-	env "${env_vars[@]}" timeout "${RUN_SECONDS:-900}" "${game}" "--configdir=${WORK_DIR}/${name}" --autogame "$@" > "${WORK_DIR}/${name}.log" 2>&1
+	env "${env_vars[@]}" timeout "${RUN_SECONDS:-900}" "${game}" "--configdir=${WORK_DIR}/${name}" "${autogame[@]}" "$@" > "${WORK_DIR}/${name}.log" 2>&1
 	echo $? > "${WORK_DIR}/${name}.exit"
 }
 
-# check_log <name> <description>: prints the result line, and counts a failure
+# check_log <name> <description> [<end>]: prints the result line, and counts a failure. <end> is the log
+# text that shows the game played to the end; the default is the autogame's "Game ended".
 check_log()
 {
-	local name="$1" description="$2"
-	if python3 -I - "${WORK_DIR}/${name}.log" "$(cat "${WORK_DIR}/${name}.exit")" "${description}" <<'PYEOF'
+	local name="$1" description="$2" end="${3:-Game ended}"
+	if python3 -I - "${WORK_DIR}/${name}.log" "$(cat "${WORK_DIR}/${name}.exit")" "${description}" "${end}" <<'PYEOF'
 import re
 import sys
 
-log_path, exit_code, description = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+log_path, exit_code, description, end = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 lines = open(log_path, errors="replace").read().splitlines()
 allowed = re.compile(r"VUID-VkPhysicalDeviceProperties2-pNext-pNext")
 
 problems = []
 if exit_code != 0:
     problems.append(f"exit code {exit_code}")
-if not any("Game ended" in line for line in lines):
+if not any(end in line for line in lines):
     problems.append("the game did not end")
 validation = [l for l in lines if re.search(r"VUID-|Validation Error", l) and not allowed.search(l)]
 errors = [l for l in lines if re.match(r"^(error|fatal) ", l) and not allowed.search(l)]
@@ -236,6 +242,16 @@ else
 		RUN_SECONDS="${COMPARE_SECONDS}" run_game desktop_frame "${DESKTOP_GAME}" WZ_VULKAN_DEBUG_SCREENSHOT="${COMPARE_FRAME}:frame.png" ${SWAPCHAIN_FORMAT:+WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT=${SWAPCHAIN_FORMAT}} -- \
 			--skirmish=highground.json --gfxbackend=vulkan --window "--resolution=${SC_SIZE}" --autogamespeed=1
 		compare_images "frame ${COMPARE_FRAME}: Vulkan SC against desktop Vulkan (${SC_SIZE}, normal speed)" "${WORK_DIR}/sc_frame/frame.png" "${WORK_DIR}/desktop_frame/frame.png"
+
+		# The gamepad alone, as on a Vulkan SC device: menus, a skirmish, and quitting. The script's
+		# positions are for a 960x540 screen.
+		if [[ "${SC_SIZE}" == "960x540" ]]; then
+			run_game sc_gamepad "${SC_GAME}" "${SC_ENV[@]}" WZ_DEBUG_GAMEPAD_SCRIPT="${SRC_DIR}/tools/vulkansc/gamepad_skirmish.gpad" -- \
+				--gfxbackend=vulkansc --debug=3d
+			check_log sc_gamepad "Vulkan SC: gamepad only, title screen to skirmish and back, validation underneath" "screenshot gamepad_7_title"
+		else
+			echo "SKIP  Vulkan SC gamepad test: it needs a 960x540 display mode, not ${SC_SIZE}"
+		fi
 	else
 		echo "FAIL  frame comparison: no display mode in the Vulkan SC log"
 		FAILURES=$((FAILURES + 1))

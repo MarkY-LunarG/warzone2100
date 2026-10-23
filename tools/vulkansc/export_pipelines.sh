@@ -14,8 +14,8 @@
 #                the shaders, the render graph, or the profile.
 #   -h           Show this help.
 #
-# Each export session is an autogame (it needs no input and quits by itself), run with a new
-# config directory that holds only the profile, and WZ_VULKAN_EXPORT_PIPELINES set to the output
+# Each export session is an autogame, or a gamepad script (both need no input, and quit by themselves),
+# run with a new config directory that holds only the profile, and WZ_VULKAN_EXPORT_PIPELINES set to the output
 # directory. Each session adds the pipelines it reaches to the directory and to its manifest,
 # wz2100_pipelines.json. The Vulkan backend must be able to start: on Linux, SDL must find a
 # display.
@@ -27,14 +27,19 @@ PROFILE="high"
 OUTPUT_DIR=""
 CHECK=0
 
-# The sessions: a skirmish settings file in data/mp/tests, then any more game arguments after "|".
+# The sessions: a skirmish settings file in data/mp/tests, or a gamepad script (.gpad) in tools/vulkansc,
+# then any more game arguments after "|".
 # Add a session when the Vulkan SC build logs "could not create pipeline ... from the pipeline cache".
 # The last one watches the long battle with the automatic camera, so that the fighting is on screen:
 # health, reload, and build progress bars draw only then (the batched rectangles, "Rect instanced").
+# The gamepad script goes through the menus with the gamepad cursor and the controller glyphs. Its
+# positions are for the 960x540 screen of the Vulkan SC emulation display, so it runs in a window of
+# that size.
 SESSIONS=(
 	"highground.json"
 	"longbattle.json"
 	"longbattle.json|--autocamera --autogamespeed=10"
+	"gamepad_skirmish.gpad"
 )
 
 usage()
@@ -99,13 +104,19 @@ for session in "${SESSIONS[@]}"; do
 	session_index=$((session_index + 1))
 	skirmish="${session%%|*}"
 	read -r -a extra_args <<< "$( [[ "${session}" == *"|"* ]] && echo "${session#*|}" )"
+	session_args=("--skirmish=${skirmish}" --autogame)
+	gamepad_script=""
+	if [[ "${skirmish}" == *.gpad ]]; then
+		gamepad_script="${SRC_DIR}/tools/vulkansc/${skirmish}"
+		session_args=(--window --resolution=960x540)
+	fi
 	config_dir="${WORK_DIR}/config_${session_index}"
 	log="${WORK_DIR}/session_${session_index}.log"
 	mkdir -p "${config_dir}"
 	cp "${PROFILE_FILE}" "${config_dir}/config"
 	echo "==> ${skirmish} ${extra_args[*]} (profile ${PROFILE})"
-	if ! WZ_VULKAN_EXPORT_PIPELINES="${EXPORT_DIR}" "${GAME}" "--configdir=${config_dir}" \
-		"--skirmish=${skirmish}" --autogame --gfxbackend=vulkan "${extra_args[@]}" > "${log}" 2>&1; then
+	if ! WZ_VULKAN_EXPORT_PIPELINES="${EXPORT_DIR}" WZ_DEBUG_GAMEPAD_SCRIPT="${gamepad_script}" "${GAME}" \
+		"--configdir=${config_dir}" "${session_args[@]}" --gfxbackend=vulkan "${extra_args[@]}" > "${log}" 2>&1; then
 		echo "error: the session failed; its log:" >&2
 		tail -20 "${log}" >&2
 		exit 1
