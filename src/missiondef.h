@@ -71,7 +71,9 @@ struct MISSION
 	UDWORD				startTime;			//time the mission started
 	SDWORD				time;				//countdown limit, or the frozen time for TIMER_PAUSE
 	// unused for TIMER_COUNTUP/TIMER_NONE
-	MISSION_TIMER_MODE	timerMode;			//how the mission timer behaves (countdown, count-up, ...)
+	// TIMER_NONE is -1, so the zero-initialized global would read as TIMER_COUNTDOWN.
+	// A replay load reads the mode before initMission() runs, so set the default here.
+	MISSION_TIMER_MODE	timerMode = TIMER_NONE;	//how the mission timer behaves (countdown, count-up, ...)
 	SDWORD				ETA;				//time taken for reinforcements to arrive
 	// < 0 = none allowed
 
