@@ -899,17 +899,23 @@ void gfx_api::context::executeCompiledRenderGraph(std::vector<RenderPassDesc>& p
 
 		beginPass(head.desc, &head);
 
+		// When the passes of a batch share one render pass, each pass is a debug group in it
+		const bool groupEachPass = (batch.count > 1);
 		for (size_t j = batch.startIndex; j < batchEnd; ++j)
 		{
 			const CompiledPass& batchPass = compileResult.passes[j];
-			if (j != batch.startIndex)
+			if (groupEachPass)
 			{
-				debugStringMarker(batchPass.desc.debugName.c_str());
+				debugSceneBegin(batchPass.desc.debugName.c_str());
 			}
 			if (batchPass.desc.recordFunc)
 			{
 				const RenderPassContext batchContext = buildRenderPassContext(batchPass);
 				batchPass.desc.recordFunc(batchContext);
+			}
+			if (groupEachPass)
+			{
+				debugSceneEnd(batchPass.desc.debugName.c_str());
 			}
 		}
 

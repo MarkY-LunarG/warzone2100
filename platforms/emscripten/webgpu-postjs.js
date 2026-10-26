@@ -22,7 +22,7 @@ async function wzCreateWebGPUDevice() {
 
 	// The same optional features as the native backend (gfx_api_webgpu.cpp, requestDevice)
 	const wantedFeatures = ['texture-compression-bc', 'texture-compression-etc2', 'texture-compression-astc',
-		'depth32float-stencil8', 'texture-formats-tier1'];
+		'depth32float-stencil8', 'texture-formats-tier1', 'timestamp-query'];
 	const requiredFeatures = wantedFeatures.filter((feature) => adapter.features.has(feature));
 
 	// The full limits of the adapter: terrain needs at least 256 texture array layers

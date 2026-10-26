@@ -34,6 +34,9 @@
 //   once, before the frame is submitted. All draws of a frame are submitted together, so an
 //   offset is never used two times in one frame.
 // - Border colors (shadow maps only) are not emulated yet: those samplers clamp to the edge.
+// - Nothing waits for the GPU during a frame. Screenshots and GPU frame timing map their buffers
+//   asynchronously. In the browser, pipelines are also built asynchronously, and the draws that
+//   need a pipeline that is not ready yet are skipped.
 //
 // This file must build as C++20, because webgpu_cpp.h needs C++20.
 
@@ -79,6 +82,17 @@ constexpr uint64_t StreamedVertexChunkSize = 1024 * 1024;
 constexpr uint32_t LightDataStorageBinding = 14; // GLSL bindings (vk/pointlights.glsl)
 constexpr uint32_t LightIndexStorageBinding = 15;
 
+// The callback mode of the readback maps and of the asynchronous pipeline builds.
+// Native: the callbacks run in instance.ProcessEvents() at the end of the frame, on this thread.
+// Browser: the device comes from the page (emscripten_webgpu_get_device), so it belongs to no
+// instance, and instance.ProcessEvents() never runs its callbacks. A spontaneous callback runs
+// from the event loop of the page, between two frames.
+#if defined(__EMSCRIPTEN__)
+constexpr wgpu::CallbackMode FrameCallbackMode = wgpu::CallbackMode::AllowSpontaneous;
+#else
+constexpr wgpu::CallbackMode FrameCallbackMode = wgpu::CallbackMode::AllowProcessEvents;
+#endif
+
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
 	return (value + alignment - 1) / alignment * alignment;
@@ -116,6 +130,22 @@ const char* to_string(wgpu::AdapterType type)
 		case wgpu::AdapterType::Unknown: return "Unknown";
 	}
 	return "Unknown";
+}
+
+// The features that WZ uses have a name; the others have their number
+std::string to_string(wgpu::FeatureName feature)
+{
+	switch (feature)
+	{
+		case wgpu::FeatureName::TextureCompressionBC: return "texture-compression-bc";
+		case wgpu::FeatureName::TextureCompressionETC2: return "texture-compression-etc2";
+		case wgpu::FeatureName::TextureCompressionASTC: return "texture-compression-astc";
+		case wgpu::FeatureName::Depth32FloatStencil8: return "depth32float-stencil8";
+		case wgpu::FeatureName::TextureFormatsTier1: return "texture-formats-tier1";
+		case wgpu::FeatureName::TimestampQuery: return "timestamp-query";
+		default: break;
+	}
+	return "0x" + astringf("%x", static_cast<unsigned int>(feature));
 }
 
 // MARK: Formats
@@ -533,7 +563,8 @@ struct wgpu_pipeline_state_object final : public gfx_api::pipeline_state_object
 	std::vector<texture_slot> textureSlots;
 	wgpu::BindGroupLayout textureLayout; // null if the pipeline has no textures and no light data
 	wgpu::PipelineLayout layout;
-	std::map<pipeline_variant_key, wgpu::RenderPipeline> variants; // a null entry means the build failed
+	std::map<pipeline_variant_key, wgpu::RenderPipeline> variants; // a null entry: the build failed, or is pending
+	std::map<pipeline_variant_key, uint64_t> pendingVariants; // browser: asynchronous builds, by request number
 
 	wgpu_pipeline_state_object(const gfx_api::pipeline_create_info& _createInfo)
 	: createInfo(_createInfo)
@@ -659,6 +690,8 @@ public:
 	bool setShadowConstants(gfx_api::lighting_constants values) override;
 	bool supportsInstancedRendering() override { return true; }
 	bool debugRecompileAllPipelines() override;
+	bool supportsGpuFrameTiming() const override { return enabledFeatures.count(wgpu::FeatureName::TimestampQuery) > 0; }
+	bool setGpuFrameTimingEnabled(bool enabled) override;
 
 private:
 	friend struct wgpu_pipeline_state_object;
@@ -681,12 +714,18 @@ private:
 	bool requestDevice();
 	bool readSurfaceCapabilities();
 #endif
+	void readDeviceFeatures();
 	void createDefaultResources();
 	optional<wgpu::PresentMode> presentModeFor(swap_interval_mode mode) const;
 	void configureSurface();
 	void presentClearedFrame();
 	[[noreturn]] void handleDeviceLost();
-	void completeScreenshot();
+	void startScreenshotReadback();
+	void finishScreenshotReadback();
+	void writeGpuTimingEnd();
+	void startGpuTimingReadback();
+	void finishGpuTimingReadbacks();
+	void releaseGpuTiming();
 	bool compileAllShaderModules();
 	void releaseWebGPUObjects();
 
@@ -739,6 +778,7 @@ private:
 
 	// Frame state
 	wgpu::CommandEncoder encoder;
+	bool encoderHasPass = false; // the encoder of the frame has a render pass
 	wgpu::RenderPassEncoder renderPass;
 	wgpu::Texture swapchainTexture;
 	wgpu::TextureView swapchainView;
@@ -780,6 +820,9 @@ private:
 	wgpu::Buffer lightIndexBuffer;
 	std::unordered_map<std::string, std::unique_ptr<wgpu_shader_module>> shaderModules;
 	std::set<wgpu_pipeline_state_object*> pipelines;
+#if defined(__EMSCRIPTEN__)
+	uint64_t pipelineRequestCounter = 0; // numbers the asynchronous pipeline builds
+#endif
 
 	// Pipeline surfaces
 	gfx_api::PipelineSurfaceStore pipelineSurfaces;
@@ -788,9 +831,11 @@ private:
 	uint32_t depthMapSize = 0;
 	uint32_t sceneMsaaSamples = 1; // WebGPU supports 1 and 4 samples
 
-	// Screenshot readback (getScreenshot records the copy; finishScreenFrame reads it after the submit)
+	// Screenshot readback (getScreenshot records the copy; finishScreenFrame maps it after the submit)
 	std::function<void (std::unique_ptr<iV_Image>)> screenshotCallback;
 	wgpu::Buffer screenshotBuffer;
+	bool screenshotMapStarted = false;
+	optional<wgpu::MapAsyncStatus> screenshotMapStatus; // set by the map callback
 	uint32_t screenshotBytesPerRow = 0;
 	uint32_t screenshotWidth = 0;
 	uint32_t screenshotHeight = 0;
@@ -799,6 +844,25 @@ private:
 	std::string debugScreenshotPath;
 	// Debug aid: WZ_WEBGPU_DEBUG_FORCE_DEVICE_LOSS=<frame> loses the device at that frame
 	optional<size_t> debugForceDeviceLossFrame;
+
+	// GPU frame timing (dynamic resolution). The first render pass of a frame writes the begin
+	// timestamp, and an empty compute pass at the end of the frame writes the end timestamp.
+	// Each slot is one frame; its results are mapped without a wait, a few frames later.
+	struct gpu_timing_slot
+	{
+		wgpu::Buffer readback;
+		size_t frameNum = 0;
+		bool inFlight = false;
+		bool mapStarted = false;
+		optional<wgpu::MapAsyncStatus> mapStatus; // set by the map callback
+	};
+	static constexpr uint32_t GpuTimingSlots = 4;
+	wgpu::QuerySet gpuTimingQuerySet;
+	wgpu::Buffer gpuTimingResolveBuffer;
+	std::array<gpu_timing_slot, GpuTimingSlots> gpuTimingSlots;
+	uint32_t gpuTimingNextSlot = 0;
+	optional<uint32_t> gpuTimingFrameSlot; // the slot of the frame that is recorded now
+	uint32_t gpuTimingGeneration = 0; // map callbacks of released slots check it
 
 	gfx_api::lighting_constants shadowConstants;
 	std::map<std::string, std::string> backendGameInfo;
@@ -833,6 +897,12 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 #if defined(__EMSCRIPTEN__)
 	instance = wgpu::CreateInstance(nullptr);
 #else
+	// The device startup and the pipeline error check wait with WaitAny and a timeout
+	if (!wgpu::HasInstanceFeature(wgpu::InstanceFeatureName::TimedWaitAny))
+	{
+		debug(LOG_ERROR, "The WebGPU implementation cannot wait for a future (no TimedWaitAny instance feature)");
+		return false;
+	}
 	static const wgpu::InstanceFeatureName instanceFeatures[] = { wgpu::InstanceFeatureName::TimedWaitAny };
 	wgpu::InstanceDescriptor instanceDesc;
 	instanceDesc.requiredFeatureCount = 1;
@@ -929,17 +999,7 @@ bool wgpu_context::initializeWebDevice()
 	device = wgpu::Device::Acquire(rawDevice);
 	queue = device.GetQueue();
 	device.GetLimits(&deviceLimits);
-	for (wgpu::FeatureName feature : {
-		wgpu::FeatureName::TextureCompressionBC,
-		wgpu::FeatureName::TextureCompressionETC2,
-		wgpu::FeatureName::TextureCompressionASTC,
-		wgpu::FeatureName::Depth32FloatStencil8 })
-	{
-		if (device.HasFeature(feature))
-		{
-			enabledFeatures.insert(feature);
-		}
-	}
+	readDeviceFeatures();
 
 	wgpu::AdapterInfo info;
 	device.GetAdapterInfo(&info);
@@ -1038,14 +1098,16 @@ bool wgpu_context::requestDevice()
 	wgpu::Limits adapterLimits;
 	adapter.GetLimits(&adapterLimits);
 
-	// Ask for the optional features that the adapter has (texture formats)
+	// Ask for the optional features that the adapter has (texture formats, and timestamps for
+	// the GPU frame timing of dynamic resolution)
 	std::vector<wgpu::FeatureName> requiredFeatures;
 	for (wgpu::FeatureName feature : {
 		wgpu::FeatureName::TextureCompressionBC,
 		wgpu::FeatureName::TextureCompressionETC2,
 		wgpu::FeatureName::TextureCompressionASTC,
 		wgpu::FeatureName::Depth32FloatStencil8,
-		wgpu::FeatureName::TextureFormatsTier1 })
+		wgpu::FeatureName::TextureFormatsTier1,
+		wgpu::FeatureName::TimestampQuery })
 	{
 		if (adapter.HasFeature(feature))
 		{
@@ -1094,10 +1156,25 @@ bool wgpu_context::requestDevice()
 
 	queue = device.GetQueue();
 	device.GetLimits(&deviceLimits);
-	enabledFeatures.insert(requiredFeatures.begin(), requiredFeatures.end());
+	readDeviceFeatures();
 	return true;
 }
 #endif // defined(__EMSCRIPTEN__)
+
+void wgpu_context::readDeviceFeatures()
+{
+	// Ask the device: in the browser, the page selects the features (webgpu-postjs.js)
+	wgpu::SupportedFeatures features;
+	device.GetFeatures(&features);
+	enabledFeatures.clear();
+	std::string names;
+	for (size_t i = 0; i < features.featureCount; ++i)
+	{
+		enabledFeatures.insert(features.features[i]);
+		names += (names.empty() ? "" : ", ") + to_string(features.features[i]);
+	}
+	debug(LOG_3D, "WebGPU device features: %s", names.c_str());
+}
 
 void wgpu_context::createDefaultResources()
 {
@@ -1311,6 +1388,9 @@ bool wgpu_context::ensureEncoder()
 	if (!encoder && device)
 	{
 		encoder = device.CreateCommandEncoder();
+		encoderHasPass = false;
+		// One debug group holds the commands of the frame (finishScreenFrame closes it)
+		encoder.PushDebugGroup(astringf("Frame %zu", frameNum).c_str());
 	}
 	return static_cast<bool>(encoder);
 }
@@ -1367,12 +1447,21 @@ void wgpu_context::finishScreenFrame()
 		flushStagingChunks();
 		if (encoder)
 		{
+			if (gpuTimingFrameSlot.has_value())
+			{
+				writeGpuTimingEnd();
+			}
+			encoder.PopDebugGroup();
 			wgpu::CommandBuffer commands = encoder.Finish();
 			queue.Submit(1, &commands);
 		}
-		if (screenshotCallback)
+		if (screenshotCallback && !screenshotMapStarted)
 		{
-			completeScreenshot();
+			startScreenshotReadback();
+		}
+		if (gpuTimingFrameSlot.has_value())
+		{
+			startGpuTimingReadback();
 		}
 #if !defined(__EMSCRIPTEN__)
 		if (debugForceDeviceLossFrame.has_value() && debugForceDeviceLossFrame.value() == frameNum)
@@ -1394,7 +1483,18 @@ void wgpu_context::finishScreenFrame()
 	swapchainAcquired = false;
 	if (instance)
 	{
+		// Native: runs the map callbacks of the readbacks (see FrameCallbackMode)
 		instance.ProcessEvents();
+	}
+	if (screenshotMapStatus.has_value())
+	{
+		finishScreenshotReadback();
+	}
+	gpuTimingFrameSlot.reset();
+	finishGpuTimingReadbacks();
+	if (!_gpuFrameTimingEnabled && gpuTimingQuerySet)
+	{
+		releaseGpuTiming(); // timing was turned off during this frame
 	}
 	frameNum = std::max<size_t>(frameNum + 1, 1);
 	purgeFrameResources();
@@ -2047,8 +2147,32 @@ wgpu::RenderPipeline wgpu_context::buildPipelineVariant(wgpu_pipeline_state_obje
 	desc.fragment = &fragment;
 
 #if defined(__EMSCRIPTEN__)
-	// The browser cannot wait for the error scope; validation errors go to the page (webgpu-postjs.js)
-	return device.CreateRenderPipeline(&desc);
+	// The browser cannot wait for a pipeline. Build it asynchronously, and skip the draws with this
+	// variant until the callback gives the pipeline (between two frames, see FrameCallbackMode).
+	// The callback also reports the errors.
+	const uint64_t request = ++pipelineRequestCounter;
+	pso.pendingVariants[key] = request;
+	device.CreateRenderPipelineAsync(&desc, FrameCallbackMode,
+		[this, psoPtr = &pso, key, request, name = std::string(shaderInfo.friendly_name)](
+			wgpu::CreatePipelineAsyncStatus status, wgpu::RenderPipeline pipeline, wgpu::StringView message) {
+			if (status != wgpu::CreatePipelineAsyncStatus::Success && status != wgpu::CreatePipelineAsyncStatus::CallbackCancelled)
+			{
+				debug(LOG_ERROR, "Failed to create the WebGPU pipeline \"%s\": %s", name.c_str(), to_std_string(message).c_str());
+			}
+			// The pipeline object or the request can be gone (destroyed, or debugRecompileAllPipelines)
+			if (pipelines.count(psoPtr) == 0)
+			{
+				return;
+			}
+			auto pending = psoPtr->pendingVariants.find(key);
+			if (pending == psoPtr->pendingVariants.end() || pending->second != request)
+			{
+				return;
+			}
+			psoPtr->pendingVariants.erase(pending);
+			psoPtr->variants[key] = (status == wgpu::CreatePipelineAsyncStatus::Success) ? std::move(pipeline) : wgpu::RenderPipeline();
+		});
+	return wgpu::RenderPipeline(); // pending
 #else
 	// Find the validation errors here, not at the first draw
 	device.PushErrorScope(wgpu::ErrorFilter::Validation);
@@ -2298,6 +2422,7 @@ bool wgpu_context::setShadowConstants(gfx_api::lighting_constants values)
 		if (gfx_api::shader_catalog(pso->createInfo.shader_mode).spec_constants != 0)
 		{
 			pso->variants.clear();
+			pso->pendingVariants.clear(); // these builds have the old constants
 		}
 	}
 	currentPSO = nullptr;
@@ -2310,6 +2435,7 @@ bool wgpu_context::debugRecompileAllPipelines()
 	for (wgpu_pipeline_state_object* pso : pipelines)
 	{
 		pso->variants.clear();
+		pso->pendingVariants.clear(); // the callbacks of these requests do nothing
 	}
 	currentPSO = nullptr;
 	currentPipeline = nullptr;
@@ -2539,6 +2665,16 @@ void wgpu_context::beginPass(const gfx_api::RenderPassDesc& pass, const gfx_api:
 	desc.colorAttachmentCount = colorAttachments.size();
 	desc.colorAttachments = colorAttachments.data();
 	desc.depthStencilAttachment = hasDepth ? &depthAttachment : nullptr;
+	wgpu::PassTimestampWrites timestampWrites;
+	if (!encoderHasPass && _gpuFrameTimingEnabled && gpuTimingQuerySet && !gpuTimingSlots[gpuTimingNextSlot].inFlight)
+	{
+		// The first render pass of the frame writes the begin timestamp
+		gpuTimingFrameSlot = gpuTimingNextSlot;
+		timestampWrites.querySet = gpuTimingQuerySet;
+		timestampWrites.beginningOfPassWriteIndex = 2 * gpuTimingNextSlot;
+		desc.timestampWrites = &timestampWrites;
+	}
+	encoderHasPass = true;
 	renderPass = encoder.BeginRenderPass(&desc);
 
 	applyViewport();
@@ -2904,16 +3040,156 @@ int32_t wgpu_context::get_context_value(const context_value property)
 	return 0;
 }
 
+// MARK: wgpu_context - GPU frame timing
+
+bool wgpu_context::setGpuFrameTimingEnabled(bool enabled)
+{
+	if (!supportsGpuFrameTiming() || !device)
+	{
+		_gpuFrameTimingEnabled = false;
+		return !enabled;
+	}
+	if (enabled == _gpuFrameTimingEnabled)
+	{
+		return true;
+	}
+	_gpuFrameTimingEnabled = enabled;
+	if (!enabled)
+	{
+		// If this frame has its begin timestamp, finishScreenFrame releases the queries after the submit
+		if (!gpuTimingFrameSlot.has_value())
+		{
+			releaseGpuTiming();
+		}
+		return true;
+	}
+	if (gpuTimingQuerySet)
+	{
+		return true; // turned off and on again in one frame
+	}
+
+	wgpu::QuerySetDescriptor querySetDesc;
+	querySetDesc.label = "WZ GPU frame timing";
+	querySetDesc.type = wgpu::QueryType::Timestamp;
+	querySetDesc.count = 2 * GpuTimingSlots;
+	gpuTimingQuerySet = device.CreateQuerySet(&querySetDesc);
+
+	// ResolveQuerySet writes at an offset that is a multiple of 256
+	wgpu::BufferDescriptor resolveDesc;
+	resolveDesc.label = "WZ GPU timing resolve";
+	resolveDesc.usage = wgpu::BufferUsage::QueryResolve | wgpu::BufferUsage::CopySrc;
+	resolveDesc.size = 256 * GpuTimingSlots;
+	gpuTimingResolveBuffer = device.CreateBuffer(&resolveDesc);
+
+	for (gpu_timing_slot& slot : gpuTimingSlots)
+	{
+		wgpu::BufferDescriptor readbackDesc;
+		readbackDesc.label = "WZ GPU timing readback";
+		readbackDesc.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
+		readbackDesc.size = 2 * sizeof(uint64_t);
+		slot = gpu_timing_slot();
+		slot.readback = device.CreateBuffer(&readbackDesc);
+	}
+	gpuTimingNextSlot = 0;
+	return true;
+}
+
+void wgpu_context::writeGpuTimingEnd()
+{
+	const uint32_t slotIndex = gpuTimingFrameSlot.value();
+	gpu_timing_slot& slot = gpuTimingSlots[slotIndex];
+
+	// WebGPU writes timestamps only at pass boundaries, so an empty pass gives the end of the frame
+	wgpu::PassTimestampWrites timestampWrites;
+	timestampWrites.querySet = gpuTimingQuerySet;
+	timestampWrites.endOfPassWriteIndex = 2 * slotIndex + 1;
+	wgpu::ComputePassDescriptor passDesc;
+	passDesc.label = "WZ GPU timing end";
+	passDesc.timestampWrites = &timestampWrites;
+	encoder.BeginComputePass(&passDesc).End();
+
+	encoder.ResolveQuerySet(gpuTimingQuerySet, 2 * slotIndex, 2, gpuTimingResolveBuffer, 256 * slotIndex);
+	encoder.CopyBufferToBuffer(gpuTimingResolveBuffer, 256 * slotIndex, slot.readback, 0, 2 * sizeof(uint64_t));
+	slot.frameNum = frameNum;
+	slot.inFlight = true;
+	slot.mapStarted = false;
+	slot.mapStatus.reset();
+	gpuTimingNextSlot = (gpuTimingNextSlot + 1) % GpuTimingSlots;
+}
+
+void wgpu_context::startGpuTimingReadback()
+{
+	const uint32_t slotIndex = gpuTimingFrameSlot.value();
+	gpu_timing_slot& slot = gpuTimingSlots[slotIndex];
+	if (!slot.inFlight || slot.mapStarted)
+	{
+		return;
+	}
+	slot.mapStarted = true;
+	const uint32_t generation = gpuTimingGeneration;
+	slot.readback.MapAsync(wgpu::MapMode::Read, 0, 2 * sizeof(uint64_t), FrameCallbackMode,
+		[this, slotIndex, generation](wgpu::MapAsyncStatus status, wgpu::StringView) {
+			if (generation == gpuTimingGeneration)
+			{
+				gpuTimingSlots[slotIndex].mapStatus = status;
+			}
+		});
+}
+
+void wgpu_context::finishGpuTimingReadbacks()
+{
+	for (gpu_timing_slot& slot : gpuTimingSlots)
+	{
+		if (!slot.mapStatus.has_value())
+		{
+			continue;
+		}
+		if (slot.mapStatus.value() == wgpu::MapAsyncStatus::Success)
+		{
+			uint64_t timestamps[2] = {0, 0};
+			// WebGPU timestamps are in nanoseconds
+			if (slot.readback.ReadMappedRange(0, timestamps, sizeof(timestamps)) == wgpu::Status::Success
+				&& timestamps[1] > timestamps[0]
+				&& (!_lastGpuFrameTiming.has_value() || slot.frameNum > _lastGpuFrameTiming->frameNum))
+			{
+				_lastGpuFrameTiming = GpuFrameTiming{slot.frameNum, timestamps[1] - timestamps[0]};			}
+			slot.readback.Unmap();
+		}
+		slot.mapStatus.reset();
+		slot.mapStarted = false;
+		slot.inFlight = false;
+	}
+}
+
+void wgpu_context::releaseGpuTiming()
+{
+	// Destroy frees the queries now. Work that is already submitted is not affected.
+	if (gpuTimingQuerySet)
+	{
+		gpuTimingQuerySet.Destroy();
+	}
+	gpuTimingQuerySet = nullptr;
+	gpuTimingResolveBuffer = nullptr;
+	for (gpu_timing_slot& slot : gpuTimingSlots)
+	{
+		slot = gpu_timing_slot();
+	}
+	gpuTimingNextSlot = 0;
+	gpuTimingFrameSlot.reset();
+	++gpuTimingGeneration; // ignore the map callbacks of the released buffers
+}
+
 // MARK: wgpu_context - screenshots
+
+// The readback does not wait for the GPU, so it works in the browser too:
+// getScreenshot records the copy, startScreenshotReadback maps the buffer after the submit,
+// and finishScreenshotReadback gives the image when the map is done (a later frame, possibly).
 
 bool wgpu_context::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)> callback)
 {
-#if defined(__EMSCRIPTEN__)
-	return false; // TODO: the readback waits for MapAsync, which the browser cannot do
-#else
 	if (!swapchainAcquired || renderPass || !(surfaceUsage & wgpu::TextureUsage::CopySrc) || screenshotCallback || !ensureEncoder())
 	{
-		return false; // like Vulkan, fail if the swapchain cannot be copied
+		return false; // like Vulkan, fail if the swapchain cannot be copied, or if a readback is not done
 	}
 	screenshotWidth = surfaceWidth;
 	screenshotHeight = surfaceHeight;
@@ -2933,24 +3209,32 @@ bool wgpu_context::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)>
 	wgpu::Extent3D size = {screenshotWidth, screenshotHeight, 1};
 	encoder.CopyTextureToBuffer(&source, &destination, &size);
 	screenshotCallback = std::move(callback);
+	screenshotMapStatus.reset();
+	screenshotMapStarted = false;
 	return true;
-#endif
 }
 
-void wgpu_context::completeScreenshot()
+void wgpu_context::startScreenshotReadback()
 {
-#if !defined(__EMSCRIPTEN__)
-	auto callback = std::move(screenshotCallback);
-	screenshotCallback = nullptr;
-	bool mapped = false;
-	instance.WaitAny(screenshotBuffer.MapAsync(wgpu::MapMode::Read, 0, screenshotBuffer.GetSize(), wgpu::CallbackMode::WaitAnyOnly,
-		[&mapped](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-			mapped = (status == wgpu::MapAsyncStatus::Success);
-			if (!mapped)
+	screenshotMapStarted = true;
+	// The callback only keeps the status: it can run while the objects are released
+	screenshotBuffer.MapAsync(wgpu::MapMode::Read, 0, screenshotBuffer.GetSize(), FrameCallbackMode,
+		[this](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+			if (status != wgpu::MapAsyncStatus::Success && status != wgpu::MapAsyncStatus::CallbackCancelled)
 			{
 				debug(LOG_ERROR, "Failed to map the screenshot buffer: %s", to_std_string(message).c_str());
 			}
-		}), UINT64_MAX);
+			screenshotMapStatus = status;
+		});
+}
+
+void wgpu_context::finishScreenshotReadback()
+{
+	auto callback = std::move(screenshotCallback);
+	screenshotCallback = nullptr;
+	const bool mapped = (screenshotMapStatus == wgpu::MapAsyncStatus::Success);
+	screenshotMapStatus.reset();
+	screenshotMapStarted = false;
 	if (!mapped)
 	{
 		screenshotBuffer = nullptr;
@@ -2959,13 +3243,21 @@ void wgpu_context::completeScreenshot()
 
 	auto image = std::make_unique<iV_Image>();
 	image->allocate(screenshotWidth, screenshotHeight, 3, false);
-	const auto* source = static_cast<const uint8_t*>(screenshotBuffer.GetConstMappedRange());
 	uint8_t* target = image->bmp_w();
 	const bool bgra = (surfaceFormat == wgpu::TextureFormat::BGRA8Unorm);
+	// Copy one row at a time: in the browser, a mapped range is a copy in any case
+	std::vector<uint8_t> row(static_cast<size_t>(screenshotWidth) * 4);
 	for (uint32_t y = 0; y < screenshotHeight; ++y)
 	{
 		// The screenshot image is bottom-up, as in the Vulkan backend (vk/screenshot_readback.cpp)
-		const uint8_t* row = source + static_cast<size_t>(screenshotHeight - 1 - y) * screenshotBytesPerRow;
+		const size_t rowOffset = static_cast<size_t>(screenshotHeight - 1 - y) * screenshotBytesPerRow;
+		if (screenshotBuffer.ReadMappedRange(rowOffset, row.data(), row.size()) != wgpu::Status::Success)
+		{
+			debug(LOG_ERROR, "Failed to read row %u of the screenshot buffer", y);
+			screenshotBuffer.Unmap();
+			screenshotBuffer = nullptr;
+			return;
+		}
 		for (uint32_t x = 0; x < screenshotWidth; ++x)
 		{
 			uint8_t* pixel = target + (static_cast<size_t>(y) * screenshotWidth + x) * 3;
@@ -2977,7 +3269,6 @@ void wgpu_context::completeScreenshot()
 	screenshotBuffer.Unmap();
 	screenshotBuffer = nullptr;
 	callback(std::move(image));
-#endif
 }
 
 // MARK: wgpu_context - shader check
@@ -3052,6 +3343,7 @@ void wgpu_context::releaseWebGPUObjects()
 	for (wgpu_pipeline_state_object* pso : pipelines)
 	{
 		pso->variants.clear();
+		pso->pendingVariants.clear();
 		pso->layout = nullptr;
 		pso->textureLayout = nullptr;
 		pso->vertexModule = nullptr;
@@ -3085,6 +3377,12 @@ void wgpu_context::releaseWebGPUObjects()
 	zeroUniformBindGroup = nullptr;
 	zeroUniformBuffer = nullptr;
 	uniformLayout = nullptr;
+	releaseGpuTiming();
+	_gpuFrameTimingEnabled = false;
+	screenshotCallback = nullptr;
+	screenshotBuffer = nullptr;
+	screenshotMapStarted = false;
+	screenshotMapStatus.reset();
 
 	// Release the surface first. If the device goes first, Dawn's Vulkan
 	// swapchain teardown crashes in FencedDeleter.
