@@ -28,6 +28,7 @@
 
 #include "vk/vulkan_hpp_include.h"
 #include "vk/wz_vk.h"
+#include "3rdparty/vk_mem_alloc.h"
 
 #include "pietypes.h"
 
@@ -48,16 +49,19 @@ struct abstract_texture;
 namespace vk
 {
 
-/// Host-visible staging buffer for one capture; freed on completion/cancel/shutdown.
+/// Host-visible staging buffer for one capture. ScreenshotReadback reuses it for later captures,
+/// so it is made again only for a larger capture. Its memory comes from VMA (in the Vulkan SC build,
+/// from the fixed staging pool), so a capture allocates no new device memory.
 struct ScreenshotStagingBuffer
 {
-	::vk::Device dev{};
+	VmaAllocator allocator = VK_NULL_HANDLE;
 	::vk::Buffer buffer{};
-	::vk::DeviceMemory memory{};
+	VmaAllocation allocation = VK_NULL_HANDLE;
 	::vk::DeviceSize size = 0;
+	::vk::DeviceSize capacity = 0;
 	::vk::DeviceSize rowPitch = 0;
 
-	bool create(::vk::Device device, const ::vk::PhysicalDeviceMemoryProperties& memprops,
+	bool create(VmaAllocator vmaAllocator, const VmaAllocationCreateInfo& allocInfo,
 		uint32_t width, uint32_t height, uint32_t bytesPerPixel,
 		::vk::DeviceSize bufferImageGranularity, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void destroy(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
@@ -83,8 +87,9 @@ class ScreenshotReadback
 public:
 	static constexpr size_t MAX_PENDING = 2;
 
+	// stagingAllocInfo: host visible and coherent memory (VMA_MEMORY_USAGE_CPU_ONLY), with its pool
 	bool requestCapture(std::function<void(std::unique_ptr<iV_Image>)> callback,
-		::vk::Device dev, const ::vk::PhysicalDeviceMemoryProperties& memprops,
+		VmaAllocator allocator, const VmaAllocationCreateInfo& stagingAllocInfo,
 		::vk::DeviceSize bufferImageGranularity, ::vk::Extent2D extent, ::vk::Format srcFormat,
 		uint32_t swapchainImageIndex, uint32_t ringSlot, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 
@@ -101,18 +106,22 @@ public:
 	void cancelAwaitingRecord(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void cancelPendingSubmit(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void cancelAll(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	/// Cancels every capture (the swapchain is going away). The staging buffers are kept.
 	void shutdown(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	/// Frees the staging buffers. Call before the device is destroyed.
+	void releaseStagingBuffers(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 
 private:
 	std::optional<PendingCapture> _awaitingRecord;
 	std::optional<PendingCapture> _pendingThisSubmit;
 	std::deque<PendingCapture> _submitted;
+	std::vector<ScreenshotStagingBuffer> _freeStaging;
 
 	size_t totalPendingCount() const;
 	static bool isSupportedSwapchainFormat(::vk::Format format);
 	static bool buildCpuImage(const PendingCapture& capture, const uint8_t* mappedStaging,
 		std::unique_ptr<iV_Image>& outImage);
-	static void destroyCaptureResources(PendingCapture& capture, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	void destroyCaptureResources(PendingCapture& capture, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 };
 
 } // namespace gfx_api::vk

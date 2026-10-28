@@ -21,8 +21,12 @@
 
 #include "gfx_api_vk_sdl.h" // Must be prior to frame.h include
 #include "lib/framework/frame.h"
+#include "lib/ivis_opengl/screen.h"
 #include <SDL3/SDL_vulkan.h>
 #include <SDL3/SDL_version.h>
+#include <SDL3/SDL_loadso.h>
+
+#include <array>
 
 sdl_Vulkan_Impl::sdl_Vulkan_Impl(SDL_Window* _window, bool _allowImplicitLayers)
 {
@@ -30,6 +34,307 @@ sdl_Vulkan_Impl::sdl_Vulkan_Impl(SDL_Window* _window, bool _allowImplicitLayers)
 	window = _window;
 	m_allowImplicitLayers = _allowImplicitLayers;
 }
+
+#if defined(WZ_VULKANSC)
+
+sdl_Vulkan_Impl::~sdl_Vulkan_Impl()
+{
+	if (m_vulkanSCLibrary)
+	{
+		SDL_UnloadObject(m_vulkanSCLibrary);
+		m_vulkanSCLibrary = nullptr;
+	}
+}
+
+PFN_vkGetInstanceProcAddr sdl_Vulkan_Impl::getVkGetInstanceProcAddr()
+{
+	if (m_getInstanceProcAddr)
+	{
+		return m_getInstanceProcAddr;
+	}
+#if defined(WZ_OS_WIN)
+	const char* libraryName = "vulkansc-1.dll";
+#else
+	const char* libraryName = "libvulkansc.so.1";
+#endif
+	if (const char* overrideName = getenv("WZ_VULKANSC_LIBRARY"))
+	{
+		libraryName = overrideName;
+	}
+	m_vulkanSCLibrary = SDL_LoadObject(libraryName);
+	if (!m_vulkanSCLibrary)
+	{
+		debug(LOG_ERROR, "Failed to load the Vulkan SC loader (%s): %s", libraryName, SDL_GetError());
+		return nullptr;
+	}
+#if defined( _MSC_VER )
+#pragma warning( push )
+#pragma warning( disable : 4191 ) // warning C4191: 'reinterpret_cast': unsafe conversion from 'SDL_FunctionPointer' to 'PFN_vkGetInstanceProcAddr'
+#endif
+	m_getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_LoadFunction(m_vulkanSCLibrary, "vkGetInstanceProcAddr"));
+#if defined( _MSC_VER )
+#pragma warning( pop )
+#endif
+	if (!m_getInstanceProcAddr)
+	{
+		debug(LOG_ERROR, "%s has no vkGetInstanceProcAddr: %s", libraryName, SDL_GetError());
+		return nullptr;
+	}
+	debug(LOG_INFO, "Loaded the Vulkan SC loader: %s", libraryName);
+	return m_getInstanceProcAddr;
+}
+
+bool sdl_Vulkan_Impl::getRequiredInstanceExtensions(std::vector<const char*> &output)
+{
+	output = { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_DISPLAY_EXTENSION_NAME };
+	m_useDisplayProperties2 = false;
+	const PFN_vkGetInstanceProcAddr gipa = getVkGetInstanceProcAddr();
+	if (uses_heavy_api_coverage && gipa)
+	{
+		// --api-coverage=heavy: VK_KHR_get_display_properties2, when the implementation has it
+#if defined( _MSC_VER )
+#pragma warning( push )
+#pragma warning( disable : 4191 ) // warning C4191: 'reinterpret_cast': unsafe conversion from 'PFN_vkVoidFunction'
+#endif
+		const auto enumerateExtensions = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(gipa(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties"));
+#if defined( _MSC_VER )
+#pragma warning( pop )
+#endif
+		std::array<VkExtensionProperties, 64> extensions{};
+		uint32_t extensionCount = static_cast<uint32_t>(extensions.size());
+		const VkResult result = (enumerateExtensions) ? enumerateExtensions(nullptr, &extensionCount, extensions.data()) : VK_ERROR_INITIALIZATION_FAILED;
+		for (uint32_t i = 0; (result == VK_SUCCESS || result == VK_INCOMPLETE) && i < extensionCount; ++i)
+		{
+			m_useDisplayProperties2 = m_useDisplayProperties2 || (strcmp(extensions[i].extensionName, VK_KHR_GET_DISPLAY_PROPERTIES_2_EXTENSION_NAME) == 0);
+		}
+		if (m_useDisplayProperties2)
+		{
+			output.push_back(VK_KHR_GET_DISPLAY_PROPERTIES_2_EXTENSION_NAME);
+		}
+	}
+	return true;
+}
+
+// The first display of the first physical device that has one, its largest mode (then the highest
+// refresh rate), and the first plane that can show that display, as the vulkansc-samples swapchain does.
+// The enumeration arrays have fixed sizes.
+bool sdl_Vulkan_Impl::createWindowSurface(VkInstance instance, VkSurfaceKHR* surface)
+{
+	const PFN_vkGetInstanceProcAddr gipa = getVkGetInstanceProcAddr();
+	if (!gipa)
+	{
+		return false;
+	}
+#if defined( _MSC_VER )
+#pragma warning( push )
+#pragma warning( disable : 4191 ) // warning C4191: 'reinterpret_cast': unsafe conversion from 'PFN_vkVoidFunction'
+#endif
+	const auto enumeratePhysicalDevices = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(gipa(instance, "vkEnumeratePhysicalDevices"));
+	const auto getDisplayProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceDisplayPropertiesKHR>(gipa(instance, "vkGetPhysicalDeviceDisplayPropertiesKHR"));
+	const auto getDisplayModeProperties = reinterpret_cast<PFN_vkGetDisplayModePropertiesKHR>(gipa(instance, "vkGetDisplayModePropertiesKHR"));
+	const auto getPlaneProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceDisplayPlanePropertiesKHR>(gipa(instance, "vkGetPhysicalDeviceDisplayPlanePropertiesKHR"));
+	const auto getPlaneSupportedDisplays = reinterpret_cast<PFN_vkGetDisplayPlaneSupportedDisplaysKHR>(gipa(instance, "vkGetDisplayPlaneSupportedDisplaysKHR"));
+	const auto createDisplayPlaneSurface = reinterpret_cast<PFN_vkCreateDisplayPlaneSurfaceKHR>(gipa(instance, "vkCreateDisplayPlaneSurfaceKHR"));
+	// --api-coverage=heavy: the same queries with VK_KHR_get_display_properties2
+	const auto getDisplayProperties2 = (m_useDisplayProperties2) ? reinterpret_cast<PFN_vkGetPhysicalDeviceDisplayProperties2KHR>(gipa(instance, "vkGetPhysicalDeviceDisplayProperties2KHR")) : nullptr;
+	const auto getDisplayModeProperties2 = (m_useDisplayProperties2) ? reinterpret_cast<PFN_vkGetDisplayModeProperties2KHR>(gipa(instance, "vkGetDisplayModeProperties2KHR")) : nullptr;
+	const auto getPlaneProperties2 = (m_useDisplayProperties2) ? reinterpret_cast<PFN_vkGetPhysicalDeviceDisplayPlaneProperties2KHR>(gipa(instance, "vkGetPhysicalDeviceDisplayPlaneProperties2KHR")) : nullptr;
+	const auto getPlaneCapabilities2 = (m_useDisplayProperties2) ? reinterpret_cast<PFN_vkGetDisplayPlaneCapabilities2KHR>(gipa(instance, "vkGetDisplayPlaneCapabilities2KHR")) : nullptr;
+	const bool useDisplayProperties2 = getDisplayProperties2 && getDisplayModeProperties2 && getPlaneProperties2 && getPlaneCapabilities2;
+#if defined( _MSC_VER )
+#pragma warning( pop )
+#endif
+	if (!enumeratePhysicalDevices || !getDisplayProperties || !getDisplayModeProperties || !getPlaneProperties || !getPlaneSupportedDisplays || !createDisplayPlaneSurface)
+	{
+		debug(LOG_ERROR, "Vulkan SC: the instance has no VK_KHR_display entry points");
+		return false;
+	}
+
+	std::array<VkPhysicalDevice, 16> physicalDevices{};
+	uint32_t physicalDeviceCount = static_cast<uint32_t>(physicalDevices.size());
+	const VkResult enumerateResult = enumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data());
+	if (enumerateResult != VK_SUCCESS && enumerateResult != VK_INCOMPLETE)
+	{
+		debug(LOG_ERROR, "Vulkan SC: vkEnumeratePhysicalDevices failed: %d", static_cast<int>(enumerateResult));
+		return false;
+	}
+	for (uint32_t deviceIndex = 0; deviceIndex < physicalDeviceCount; ++deviceIndex)
+	{
+		const VkPhysicalDevice physicalDevice = physicalDevices[deviceIndex];
+		std::array<VkDisplayPropertiesKHR, 32> displays{};
+		uint32_t displayCount = static_cast<uint32_t>(displays.size());
+		VkResult displayResult = VK_SUCCESS;
+		if (useDisplayProperties2)
+		{
+			std::array<VkDisplayProperties2KHR, 32> displays2{};
+			for (auto& display2 : displays2)
+			{
+				display2.sType = VK_STRUCTURE_TYPE_DISPLAY_PROPERTIES_2_KHR;
+			}
+			displayResult = getDisplayProperties2(physicalDevice, &displayCount, displays2.data());
+			for (uint32_t i = 0; i < displayCount; ++i)
+			{
+				displays[i] = displays2[i].displayProperties;
+			}
+		}
+		else
+		{
+			displayResult = getDisplayProperties(physicalDevice, &displayCount, displays.data());
+		}
+		if ((displayResult != VK_SUCCESS && displayResult != VK_INCOMPLETE) || displayCount == 0)
+		{
+			continue;
+		}
+		const VkDisplayKHR display = displays[0].display;
+
+		std::array<VkDisplayModePropertiesKHR, 64> modes{};
+		uint32_t modeCount = static_cast<uint32_t>(modes.size());
+		VkResult modeResult = VK_SUCCESS;
+		if (useDisplayProperties2)
+		{
+			std::array<VkDisplayModeProperties2KHR, 64> modes2{};
+			for (auto& mode2 : modes2)
+			{
+				mode2.sType = VK_STRUCTURE_TYPE_DISPLAY_MODE_PROPERTIES_2_KHR;
+			}
+			modeResult = getDisplayModeProperties2(physicalDevice, display, &modeCount, modes2.data());
+			for (uint32_t i = 0; i < modeCount; ++i)
+			{
+				modes[i] = modes2[i].displayModeProperties;
+			}
+		}
+		else
+		{
+			modeResult = getDisplayModeProperties(physicalDevice, display, &modeCount, modes.data());
+		}
+		if ((modeResult != VK_SUCCESS && modeResult != VK_INCOMPLETE) || modeCount == 0)
+		{
+			continue;
+		}
+		const VkDisplayModePropertiesKHR* bestMode = &modes[0];
+		for (uint32_t i = 1; i < modeCount; ++i)
+		{
+			const auto& p = modes[i].parameters;
+			const auto& best = bestMode->parameters;
+			const uint64_t area = static_cast<uint64_t>(p.visibleRegion.width) * p.visibleRegion.height;
+			const uint64_t bestArea = static_cast<uint64_t>(best.visibleRegion.width) * best.visibleRegion.height;
+			if (area > bestArea || (area == bestArea && p.refreshRate > best.refreshRate))
+			{
+				bestMode = &modes[i];
+			}
+		}
+
+		std::array<VkDisplayPlanePropertiesKHR, 32> planes{};
+		uint32_t planeCount = static_cast<uint32_t>(planes.size());
+		VkResult planeResult = VK_SUCCESS;
+		if (useDisplayProperties2)
+		{
+			std::array<VkDisplayPlaneProperties2KHR, 32> planes2{};
+			for (auto& plane2 : planes2)
+			{
+				plane2.sType = VK_STRUCTURE_TYPE_DISPLAY_PLANE_PROPERTIES_2_KHR;
+			}
+			planeResult = getPlaneProperties2(physicalDevice, &planeCount, planes2.data());
+			for (uint32_t i = 0; i < planeCount; ++i)
+			{
+				planes[i] = planes2[i].displayPlaneProperties;
+			}
+		}
+		else
+		{
+			planeResult = getPlaneProperties(physicalDevice, &planeCount, planes.data());
+		}
+		if (planeResult != VK_SUCCESS && planeResult != VK_INCOMPLETE)
+		{
+			continue;
+		}
+		for (uint32_t planeIndex = 0; planeIndex < planeCount; ++planeIndex)
+		{
+			if (planes[planeIndex].currentDisplay != VK_NULL_HANDLE && planes[planeIndex].currentDisplay != display)
+			{
+				continue;
+			}
+			std::array<VkDisplayKHR, 32> supported{};
+			uint32_t supportedCount = static_cast<uint32_t>(supported.size());
+			const VkResult supportedResult = getPlaneSupportedDisplays(physicalDevice, planeIndex, &supportedCount, supported.data());
+			if (supportedResult != VK_SUCCESS && supportedResult != VK_INCOMPLETE)
+			{
+				continue;
+			}
+			bool planeShowsDisplay = false;
+			for (uint32_t i = 0; i < supportedCount; ++i)
+			{
+				planeShowsDisplay = planeShowsDisplay || (supported[i] == display);
+			}
+			if (!planeShowsDisplay)
+			{
+				continue;
+			}
+			if (useDisplayProperties2)
+			{
+				// The plane must be able to show the whole mode
+				VkDisplayPlaneInfo2KHR planeInfo = {};
+				planeInfo.sType = VK_STRUCTURE_TYPE_DISPLAY_PLANE_INFO_2_KHR;
+				planeInfo.mode = bestMode->displayMode;
+				planeInfo.planeIndex = planeIndex;
+				VkDisplayPlaneCapabilities2KHR planeCapabilities = {};
+				planeCapabilities.sType = VK_STRUCTURE_TYPE_DISPLAY_PLANE_CAPABILITIES_2_KHR;
+				const VkResult capabilitiesResult = getPlaneCapabilities2(physicalDevice, &planeInfo, &planeCapabilities);
+				const VkExtent2D& maxExtent = planeCapabilities.capabilities.maxDstExtent;
+				if (capabilitiesResult == VK_SUCCESS && (maxExtent.width < bestMode->parameters.visibleRegion.width || maxExtent.height < bestMode->parameters.visibleRegion.height))
+				{
+					continue;
+				}
+			}
+
+			VkDisplaySurfaceCreateInfoKHR createInfo = {};
+			createInfo.sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR;
+			createInfo.displayMode = bestMode->displayMode;
+			createInfo.planeIndex = planeIndex;
+			createInfo.planeStackIndex = planes[planeIndex].currentStackIndex;
+			createInfo.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+			createInfo.globalAlpha = 1.0f;
+			createInfo.alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+			createInfo.imageExtent = bestMode->parameters.visibleRegion;
+			const VkResult surfaceResult = createDisplayPlaneSurface(instance, &createInfo, nullptr, surface);
+			if (surfaceResult != VK_SUCCESS)
+			{
+				debug(LOG_ERROR, "Vulkan SC: vkCreateDisplayPlaneSurfaceKHR failed: %d", static_cast<int>(surfaceResult));
+				return false;
+			}
+			m_displayWidth = static_cast<int>(createInfo.imageExtent.width);
+			m_displayHeight = static_cast<int>(createInfo.imageExtent.height);
+			// The game lays out its interface for the window's size, so the window gets the display mode's size.
+			// The display shows the frames, so the window is hidden: input comes from a gamepad. Debug aid:
+			// WZ_VULKANSC_SHOW_WINDOW=1 leaves it visible, for keyboard and mouse input at display coordinates.
+			SDL_SetWindowFullscreen(window, false);
+			SDL_SetWindowSize(window, m_displayWidth, m_displayHeight);
+			if (getenv("WZ_VULKANSC_SHOW_WINDOW") == nullptr)
+			{
+				SDL_HideWindow(window);
+			}
+			debug(LOG_INFO, "Vulkan SC display: %s, mode %dx%d at %.3f Hz, plane %u (physical device %u)",
+				(displays[0].displayName) ? displays[0].displayName : "(no name)", m_displayWidth, m_displayHeight,
+				static_cast<double>(bestMode->parameters.refreshRate) / 1000.0, planeIndex, deviceIndex);
+			return true;
+		}
+	}
+	debug(LOG_ERROR, "Vulkan SC: no display with a usable plane was found");
+	return false;
+}
+
+void sdl_Vulkan_Impl::getDrawableSize(int* w, int* h)
+{
+	if (m_displayWidth > 0 && m_displayHeight > 0)
+	{
+		*w = m_displayWidth;
+		*h = m_displayHeight;
+		return;
+	}
+	SDL_GetWindowSizeInPixels(window, w, h);
+}
+
+#else // !defined(WZ_VULKANSC)
 
 PFN_vkGetInstanceProcAddr sdl_Vulkan_Impl::getVkGetInstanceProcAddr()
 {
@@ -86,6 +391,8 @@ void sdl_Vulkan_Impl::getDrawableSize(int* w, int* h)
 {
 	SDL_GetWindowSizeInPixels(window, w, h);
 }
+
+#endif // defined(WZ_VULKANSC)
 
 bool sdl_Vulkan_Impl::allowImplicitLayers() const
 {

@@ -35,6 +35,7 @@
 
 #include "lib/framework/wzapp.h"
 #include "lib/ivis_opengl/gfx_api_vk.h"
+#include "lib/ivis_opengl/screen.h"
 
 #include <chrono>
 #include <thread>
@@ -417,6 +418,11 @@ void ScreenFrameCoordinator::presentAndAdvanceRing(ScreenFramePipelineState& sta
 	::vk::Result presentResult = ::vk::Result::eSuccess;
 	try {
 		presentResult = _root.presentQueue.presentKHR(presentInfo, _root.vkDynLoader);
+		if (uses_heavy_api_coverage && _root.debugUtilsExtEnabled)
+		{
+			// --api-coverage=heavy: a queue label at each present
+			_root.presentQueue.insertDebugUtilsLabelEXT(::vk::DebugUtilsLabelEXT().setPLabelName("Present"), _root.vkDynLoader);
+		}
 	}
 	catch (const ::vk::OutOfDateKHRError&)
 	{

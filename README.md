@@ -14,7 +14,7 @@
 - Extensive tech tree with over 400 different technologies
 - Customizable units with a flexible design system that enables a wide variety of possible tactics
 - Cross-platform multiplayer
-- Support for multiple graphics backends (OpenGL, OpenGL ES, Vulkan)
+- Support for multiple graphics backends (OpenGL, OpenGL ES, Vulkan, WebGPU, and Vulkan SC)
 - 100% free and open source
 
 For more info, see: [Homepage of the Warzone 2100 Project](https://wz2100.net/)
@@ -295,6 +295,21 @@ See [platforms/windows/README-build.md](platforms/windows/README-build.md)
 ### macOS
 See [platforms/macos/README.md](platforms/macos/README.md)
 
+### Graphics backends
+
+The game picks its graphics backend at run time with `--gfxbackend=<backend>`, from the backends the build has.
+If a backend cannot start, the game tries the next one.
+
+| Backend | Build | Run |
+|---|---|---|
+| OpenGL / OpenGL ES | Always built | `./build/src/warzone2100 --gfxbackend=opengl` (or `opengles`) |
+| Vulkan | On by default (`WZ_ENABLE_BACKEND_VULKAN`) | `./build/src/warzone2100 --gfxbackend=vulkan` |
+| WebGPU, native (Linux) | `-DWZ_ENABLE_BACKEND_WEBGPU=ON` ([below](#native-linux)) | `SDL_VIDEO_DRIVER=wayland ./build/src/warzone2100 --gfxbackend=webgpu` |
+| WebGPU, browser | An Emscripten build with `-DWZ_ENABLE_BACKEND_WEBGPU=ON` ([below](#browser)) | `python3 platforms/emscripten/serve.py build_web/src`, then open http://localhost:8000/ |
+| Vulkan SC | A separate build with `-DWZ_ENABLE_BACKEND_VULKANSC=ON` ([below](#vulkan-sc-backend)) | `./build_vulkansc/src/warzone2100 --gfxbackend=vulkansc` |
+
+`--gfxdebug` turns on each backend's debug checks (the validation layer for Vulkan and Vulkan SC).
+
 ### WebGPU backend
 
 The WebGPU backend uses [Dawn](https://dawn.googlesource.com/dawn).
@@ -322,6 +337,7 @@ Thus, it needs `glslc` (from shaderc or the Vulkan SDK).
    ./build/src/warzone2100 --gfxbackend=webgpu
    ```
    WebGPU needs the SDL Wayland video driver.
+   If SDL picks X11 (for example, through XWayland), start the game with `SDL_VIDEO_DRIVER=wayland`.
    On X11, the game uses the next available backend.
 
 Debug aids:
@@ -373,6 +389,92 @@ If the browser has no WebGPU, the game uses WebGL 2.
    Set `dom.webgpu.enabled` to `true` in `about:config`, or start Firefox with a profile that sets it.
    Without WebGPU, the page falls back to WebGL 2.
    The browser version has no screenshots and no `--gfxdebug` shader check yet.
+
+### Vulkan SC backend
+
+[Vulkan SC](https://www.khronos.org/vulkansc/) is the safety-critical variant of Vulkan 1.2.
+The Vulkan SC backend is the Vulkan backend, built for Vulkan SC.
+Vulkan SC has no shader modules: the pipelines are compiled offline into a pipeline cache, and the application reserves all its objects when it creates the device.
+It is off by default, and needs a separate build directory: a Vulkan SC build has no desktop Vulkan.
+It is tested on Linux with the [VulkanSC-Emulation](https://github.com/KhronosGroup/VulkanSC-Emulation) ICD, which runs Vulkan SC on a desktop Vulkan driver.
+
+In an SC build, Vulkan SC is the default backend, and there is no desktop Vulkan backend.
+The SC build presents through `VK_KHR_display` (the first display, at its largest mode), not a window.
+It hides the SDL window (`WZ_VULKANSC_SHOW_WINDOW=1` shows it), so the game takes no keyboard or mouse input: play it with a gamepad.
+It shows no message boxes either; it logs them.
+Its graphics settings are a fixed graphics profile, `tools/vulkansc/profile_high.cfg`, built into the game; the options it fixes cannot be changed in the menus.
+
+* Prerequisites, in addition to the [Linux](#linux) ones:
+   * The Vulkan SC headers ([VulkanSC-Headers](https://github.com/KhronosGroup/VulkanSC-Headers)): set `VULKANSC_SDK` or `-DWZ_VULKANSC_INCLUDE_DIR=/path/to/VulkanSC-Headers/include`.
+   * The pipeline cache compiler (PCC) of the Vulkan SC implementation: `pcconvk` from VulkanSC-Emulation, given with `-DWZ_VULKANSC_PCC=/path/to/pcconvk`.
+     For another PCC, set `WZ_VULKANSC_PCC_PATH_ARG`, `WZ_VULKANSC_PCC_OUT_ARG`, `WZ_VULKANSC_PCC_PREFIX_ARG`, and `WZ_VULKANSC_PCC_EXTRA_FLAGS` to its options.
+   * At run time, the Vulkan SC loader ([VulkanSC-Loader](https://github.com/KhronosGroup/VulkanSC-Loader)), `libvulkansc.so.1`, and a Vulkan SC ICD.
+* Configure and build:
+   ```shell
+   cmake -S . -B build_vulkansc -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+       -DWZ_ENABLE_BACKEND_VULKANSC=ON \
+       -DWZ_VULKANSC_INCLUDE_DIR=/path/to/VulkanSC-Headers/include \
+       -DWZ_VULKANSC_PCC=/path/to/VulkanSC-Emulation/build/pcc/pcconvk
+   cmake --build build_vulkansc
+   ```
+   The build compiles the pipeline JSON of the profile (`data/vulkansc/high`) and the SPIR-V shaders into the pipeline cache.
+   The cache and the pipeline manifest go into `base.wz` (`shaders/vksc/`).
+   A cache works only with the implementation whose PCC built it.
+* Run, on the emulation ICD:
+   ```shell
+   VK_DRIVER_FILES=/path/to/VulkanSC-Emulation/build/icd/vksconvk.json \
+   WZ_VULKANSC_LIBRARY=/path/to/VulkanSC-Loader/build/loader/libvulkansc.so.1 \
+   ./build_vulkansc/src/warzone2100 --gfxbackend=vulkansc
+   ```
+   `WZ_VULKANSC_LIBRARY` is only needed when the Vulkan SC loader is not installed.
+   It can also name a layer that forwards to the loader, such as the Premium-GFXR Vulkan SC capture layer.
+   With `--gfxdebug`, the game enables `VK_LAYER_KHRONOS_validation` through the Vulkan SC loader: build [VulkanSC-ValidationLayers](https://github.com/KhronosGroup/VulkanSC-ValidationLayers) and point `VK_LAYER_PATH` at its `layers` directory.
+   The emulation ICD can also run the desktop validation layer underneath: `VKSC_EMU_VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`.
+
+#### The pipeline JSON
+
+The desktop Vulkan build writes the pipeline JSON of the pipelines it creates, when `WZ_VULKAN_EXPORT_PIPELINES` names a directory.
+[tools/vulkansc/export_pipelines.sh](tools/vulkansc/export_pipelines.sh) runs the export sessions (three autogames and a gamepad script) with the profile, and writes `data/vulkansc/<profile>`:
+one JSON document per pipeline, and the manifest `wz2100_pipelines.json`.
+Run it with a desktop Vulkan build after a change to the pipelines, the shaders, the render graph, or the profile, and commit the result:
+```shell
+tools/vulkansc/export_pipelines.sh        # write data/vulkansc/high
+tools/vulkansc/export_pipelines.sh -c     # check only: compare with data/vulkansc/high
+```
+If the SC build logs "not in the pipeline manifest" or "could not create pipeline", the export sessions do not reach that pipeline: add a session that draws it.
+
+#### Everything is created at startup
+
+A safety-critical application creates its objects when it starts, and allocates no memory after.
+The SC build does this for the objects that are costly or limited in Vulkan SC:
+
+* **Pipelines.** The manifest holds, besides the pipeline names, each pipeline recipe (the state, the shaders, the vertex, texture, and uniform layout) and a render pass layout of each render pass compatibility class.
+  At the end of startup, before the first frame, the game creates a render pass of each class and every pipeline of the manifest, from the pipeline cache (`VkPipelineOfflineCreateInfo`).
+  The specialization constants (shadow and lighting settings) come from the manifest too, so that they match the profile.
+  When the game code later asks for a pipeline, it gets the one created at startup.
+  No pipeline is created after startup: one that is not in the manifest is logged as an error, and its draws are skipped.
+  The reservation has exactly one pipeline pool entry for each pipeline in the cache.
+* **Device memory.** All device memory is allocated at startup, as fixed [VMA](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) pools (`minBlockCount` equal to `maxBlockCount`): device-local buffers, device-local images, streamed buffers, and staging.
+  Every buffer and image, including the render targets and the screenshot staging buffers, is sub-allocated from them, and freeing one returns its space to the pool.
+  Vulkan SC has no `vkFreeMemory`, so after startup the game refuses any `vkAllocateMemory` and logs an error.
+* **Object reservation.** `VkDeviceObjectReservationCreateInfo` reserves every object type, with headroom over the measured peaks.
+  Command pools reserve their command buffer memory (`VkCommandPoolMemoryReservationCreateInfo`), and the descriptor pools, command pools, and command buffers are all created at startup.
+* **Swapchain.** It is created once. A display change that needs a new swapchain is a fatal error, as Vulkan SC cannot destroy one.
+
+What the game still creates after startup, within the reservation and from the memory pools: images, buffers, and image views (textures, text, and vertex data as maps and menus load), framebuffers, descriptor sets, and the few render passes of layouts that the render graph first uses later.
+At shutdown the game logs, for each object type, the peak, the total created, and how many were created after startup (`--debug=3d`).
+
+#### Tests
+
+[tools/vulkansc/run_tests.sh](tools/vulkansc/run_tests.sh) runs the desktop and Vulkan SC builds through autogames, a frame comparison between them, and a gamepad-only game (a virtual gamepad plays [tools/vulkansc/gamepad_skirmish.gpad](tools/vulkansc/gamepad_skirmish.gpad), with `WZ_DEBUG_GAMEPAD_SCRIPT`).
+A test fails on any validation message, error, Vulkan SC fault, pipeline missing from the cache, object alive at shutdown, or device memory allocated after startup.
+Run it with `-h` for its options and the environment it needs (the emulation ICD, the loader, the Vulkan SC validation layer, and a Premium-GFXR build for capture and replay).
+
+Debug aids:
+
+* `WZ_VULKANSC_PIPELINE_CACHE=<file>` and `WZ_VULKANSC_PIPELINE_MANIFEST=<file>` use that pipeline cache and manifest instead of the ones in `base.wz`.
+* `WZ_VULKAN_DEBUG_SCREENSHOT=<frame>:<file.png>` saves that frame as a PNG (also in the desktop Vulkan build).
+* `WZ_VULKAN_DEBUG_VALIDATION_NONFATAL=1` logs validation errors instead of showing a fatal message box.
 
 # Licensing
 

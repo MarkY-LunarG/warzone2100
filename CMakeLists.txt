@@ -22,6 +22,12 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
 	OPTION(ENABLE_DOCS "Enable documentation generation" ON)
 	OPTION(WZ_ENABLE_BACKEND_VULKAN "Enable Vulkan backend" ON)
 	OPTION(WZ_ENABLE_BACKEND_WEBGPU "Enable WebGPU backend (Dawn)" OFF)
+	# Builds the Vulkan backend for Vulkan SC 1.0 instead of Vulkan: --gfxbackend=vulkansc replaces vulkan.
+	# Needs the Vulkan SC headers (VULKANSC_SDK, or WZ_VULKANSC_INCLUDE_DIR) and, at run time, the Vulkan SC loader.
+	OPTION(WZ_ENABLE_BACKEND_VULKANSC "Build the Vulkan backend for Vulkan SC" OFF)
+	if(WZ_ENABLE_BACKEND_VULKANSC AND NOT WZ_ENABLE_BACKEND_VULKAN)
+		message(FATAL_ERROR "WZ_ENABLE_BACKEND_VULKANSC requires WZ_ENABLE_BACKEND_VULKAN")
+	endif()
 	set(WZ_USE_STACK_PROTECTION ON CACHE BOOL "Use Stack Protection hardening." FORCE)
 else()
 	set(WZ_SKIP_ADDITIONAL_FONTS ON CACHE BOOL "Skip additional fonts (used to display CJK glyphs)" FORCE)

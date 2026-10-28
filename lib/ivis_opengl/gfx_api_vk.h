@@ -39,10 +39,16 @@
 #include "vk/render_pass_layout_cache.h"
 #include "vk/screen_frame_coordinator.h"
 #include "vk/screenshot_readback.h"
+#include "vk/pipeline_json_export.h"
+#include "vk/pipeline_manifest.h"
+#include "vk/shared_pipeline_objects.h"
+#include "vk/vksc_bridge.h"
 #include "vk/warm_entry.h"
 #include <algorithm>
 #include <sstream>
 #include <map>
+#include <deque>
+#include <set>
 #include <vector>
 #include <limits>
 #include <unordered_map>
@@ -114,6 +120,11 @@ namespace std {
 	};
 }
 
+// --api-coverage=heavy: flushes (or invalidates) the mapped memory of an allocation with a direct
+// vkFlushMappedMemoryRanges (or vkInvalidateMappedMemoryRanges) call. VMA makes no call for
+// host-coherent memory.
+void flushMappedAllocationRange(VmaAllocator allocator, VmaAllocation allocation, bool invalidate, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+
 struct BlockBufferAllocator
 {
 	BlockBufferAllocator(VmaAllocator allocator, uint32_t minimumBlockSize, const vk::BufferUsageFlags& usageFlags, const VmaAllocationCreateInfo& allocInfo, bool autoMap = false);
@@ -152,7 +163,12 @@ public:
 	void unmapMemory(AllocationResult memoryAllocation);
 	void unmapAutomappedMemory();
 	void flushAutomappedMemory();
+	// --api-coverage=heavy: flushAutomappedMemory() with direct calls (flushMappedAllocationRange())
+	void flushAutomappedMemoryRanges(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void clean();
+
+	// The most bytes used between two calls of clean(), that is, in one frame (a fixed-size ring needs this much).
+	uint64_t peakUsedPerFrame() const { return peakUsed; }
 
 private:
 	VmaAllocator allocator;
@@ -165,6 +181,7 @@ private:
 	uint32_t currentWritePosInLastBlock = 0;
 
 	uint32_t minimumFirstBlockSize = 0;
+	uint64_t peakUsed = 0;
 
 	const bool autoMap = false;
 };
@@ -242,11 +259,22 @@ struct perFrameResources_t
 	public:
 		std::vector<DescriptorPoolDetails> pools;
 		size_t currPool = 0;
+		// The most sets and descriptors allocated between two resets, that is, in one frame.
+		size_t peakSetsPerFrame = 0;
+		size_t peakDescriptorsPerFrame = 0;
 	};
 	DescriptorPoolsContainer combinedImageSamplerDescriptorPools;
 	DescriptorPoolsContainer uniformDynamicDescriptorPools;
 	uint32_t numalloc = 0;
+	// Neither pool lets a command buffer be reset on its own (Vulkan SC may not support it):
+	// each is reset as a whole. cmdCopy has a pool of its own because it is reset while cmdDraw is recording.
 	vk::CommandPool pool;
+	vk::CommandPool copyPool;
+#if defined(WZ_VULKANSC)
+	// The most memory cmdDraw and cmdCopy used in one frame (vkGetCommandPoolMemoryConsumption)
+	uint64_t peakDrawCommandBufferBytes = 0;
+	uint64_t peakCopyCommandBufferBytes = 0;
+#endif
 	vk::Fence previousSubmission;
 	vk::Semaphore imageAcquireSemaphore;
 	std::vector</*WZ_vk::UniqueBuffer*/vk::Buffer> buffer_to_delete;
@@ -354,7 +382,12 @@ struct buffering_mechanism
 
 	static perFrameResources_t& get_current_resources();
 	static perSwapchainImageResources_t& get_swapchain_resources(uint32_t swapchainIndex);
-	static void init(vk::Device dev, const VmaAllocator& allocator, size_t swapchainImageCount, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	// The frame slots live as long as the device; the per-image resources as long as the swapchain.
+	static void initFrames(vk::Device dev, const VmaAllocator& allocator, size_t numFrames, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	static void initSwapchainImages(vk::Device dev, size_t swapchainImageCount, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	// Returns every frame slot to the state initFrames() leaves it in. The device must be idle.
+	static void resetFramesAfterIdle(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+	static void destroySwapchainImages();
 	static void destroy(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	static void swap(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	static bool isInitialized();
@@ -412,7 +445,7 @@ private:
 
 	vk::ShaderModule get_module(const std::string& name, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 
-	static std::vector<vk::PipelineShaderStageCreateInfo> get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule);
+	static std::vector<vk::PipelineShaderStageCreateInfo> get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule, bool hasTessellationStages);
 
 	static std::array<vk::PipelineColorBlendAttachmentState, 1> to_vk(const REND_MODE& blend_state, const uint8_t& color_mask);
 
@@ -697,10 +730,10 @@ struct VkSurfaceGpu
 	std::unique_ptr<gfx_api::abstract_texture> texture;
 	std::vector<WZ_vk::UniqueImageView> cascadeViews; // ShadowMap only
 
-	// Owned GPU resources for attachment-style allocates (MSAA color / depth).
+	// Owned GPU resources for attachment-style allocates (MSAA color / depth), allocated with VMA.
 	// Unused when texture owns VMA resources (SceneColor / ShadowMap) or WsiPresentColor.
 	vk::Image image {};
-	vk::DeviceMemory memory {};
+	VmaAllocation allocation = VK_NULL_HANDLE;
 	vk::ImageView view {};
 };
 
@@ -763,9 +796,16 @@ struct VkRoot final : gfx_api::context
 		std::shared_ptr<VkhRenderPassCompat> rp_compat_info;
 		vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
 		size_t identifier;
+		// The pipelines of this render pass are stored under the id of the first render pass that is
+		// compatible with it (Vulkan render pass compatibility: the same attachment formats and samples),
+		// so compatible render passes share one pipeline instead of building one each.
+		size_t psoSlot;
+		// Stable name of the compatibility class (gfx_api::vk::renderPassClassName()).
+		std::string className;
 
 		RenderPassDetails(size_t _identifier)
 		: identifier(_identifier)
+		, psoSlot(_identifier)
 		{ }
 	};
 
@@ -794,6 +834,39 @@ struct VkRoot final : gfx_api::context
 	float gpuTimestampPeriod = 0.f;
 	uint64_t gpuTimestampMask = ~uint64_t(0);
 
+	// Layouts, samplers, and shader modules of all pipelines. Mutable because VkPSO holds a const VkRoot.
+	mutable gfx_api::vk::SharedPipelineObjects sharedPipelineObjects;
+	// Set by WZ_VULKAN_EXPORT_PIPELINES: records every pipeline for the Vulkan SC pipeline JSON.
+	std::unique_ptr<gfx_api::vk::PipelineJsonExport> pipelineJsonExport;
+	// The compatibility class name of a render pass (RenderPassDetails::className).
+	const std::string& renderPassClassNameFor(vk::RenderPass renderPass) const;
+	// False in a Vulkan SC build without a pipeline cache: recipes are registered but not built, and
+	// draws are skipped (skipDrawsWithoutPipeline).
+	bool canCreatePipelines() const;
+	bool skipDrawsWithoutPipeline = false;
+	// (recipe, render pass slot) pairs that could not be built (Vulkan SC: not in the pipeline cache)
+	std::set<std::pair<size_t, size_t>> unavailablePipelines;
+#if defined(WZ_VULKANSC)
+	gfx_api::vk::sc::DeviceReservation vulkanSCDeviceReservation() const;
+	void installVulkanSCRemovedEntryPoints();
+	void logVulkanSCProperties();
+	bool loadVulkanSCPipelineCache();
+	// Creates every pipeline of the pipeline manifest (data/vulkansc/<profile>/wz2100_pipelines.json, in
+	// base.wz next to the pipeline cache), with its render passes, at the end of startup. No pipeline is
+	// created after it: the game's recipes take the place of the manifest's (build_pipeline()).
+	bool createManifestPipelines();
+	// The uniform block names of the recipes read from the manifest (pipeline_create_info points at them)
+	std::deque<std::string> manifestRecipeNames;
+	bool createVulkanSCMemoryPools();
+	void updateVulkanSCMemoryPoolPeaks();
+	void reportVulkanSCMemoryPools(code_part part);
+	void destroyVulkanSCMemoryPools();
+	// The pipeline cache: its data must stay where it is while the device lives (application storage)
+	std::vector<char> vulkanSCPipelineCacheData;
+	uint32_t vulkanSCPipelineCount = 0;
+	vk::PipelineCache vulkanSCPipelineCache;
+#endif
+
 	// default textures
 	VkTexture* pDefaultTexture = nullptr;
 	VkTextureArray* pDefaultArrayTexture = nullptr;
@@ -814,10 +887,13 @@ struct VkRoot final : gfx_api::context
 	struct BuiltPipelineRegistry
 	{
 		const gfx_api::pipeline_create_info createInfo;
+		// Stable name of the recipe (gfx_api::vk::pipelineRecipeName()).
+		const std::string name;
 		std::vector<VkPSO *> renderPassPSO;
 
-		BuiltPipelineRegistry(const gfx_api::pipeline_create_info& _createInfo, size_t numRenderPasses)
+		BuiltPipelineRegistry(const gfx_api::pipeline_create_info& _createInfo, std::string _name, size_t numRenderPasses)
 		: createInfo(_createInfo)
+		, name(std::move(_name))
 		{
 			renderPassPSO.resize(numRenderPasses, nullptr);
 		}
@@ -905,6 +981,13 @@ private:
 	// GPU frame timing (a ring of timestamp query pairs, read a few frames late)
 	bool initGpuTimestampSupport();
 	void destroyGpuTimingQueryPool();
+	// --api-coverage=heavy: query the device, the surface, and the display with more of the API
+	void logApiCoverageInfo();
+	// --api-coverage=heavy: the GPU timestamp and the CPU clock at the same moment (VK_KHR_calibrated_timestamps)
+	void logCalibratedTimestamps();
+	bool calibratedTimestampsEnabled = false;
+	vk::TimeDomainKHR calibrationHostTimeDomain = vk::TimeDomainKHR::eDevice;
+	bool instanceExtensionEnabled(const char* extensionName) const;
 	void pollGpuFrameTimings();
 	/// Write the frame's begin timestamp on first use of the draw command buffer (must be outside a render pass)
 	void writeGpuTimingBeginIfNeeded(vk::CommandBuffer cmdBuffer);
@@ -993,6 +1076,7 @@ private:
 	/// Does not clear _screenFrameOpen (owned by beginScreenFrame / finish / shutdown).
 	void finalizeActiveRecording();
 	void destroySwapchainAndSwapchainSpecificStuff(bool doDestroySwapchain);
+	void reportFrameResourcePeaks(code_part part) const;
 	void createNewSwapchainAndSwapchainSpecificStuff(const vk::Result& reason); // Throws on failure
 
 public:

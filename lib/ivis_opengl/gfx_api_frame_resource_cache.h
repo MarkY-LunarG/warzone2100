@@ -53,7 +53,8 @@ struct abstract_texture;
 /// Lifecycle (callers must preserve this ordering):
 /// 1. releaseAll() at beginScreenFrame() - reset per-key use counts for this frame.
 /// 2. acquire() while recording passes (during graph execution).
-/// 3. purgeUnused() at finishScreenFrame() - trim pools; drop keys with usedCount==0.
+/// 3. purgeUnused() at finishScreenFrame() - trim pools; drop keys with usedCount==0
+///    (after setMaxIdleFrames() frames in a row without a use, if that is set).
 /// </summary>
 template <typename Key, typename Storage, typename Handle>
 class PooledResourceCache
@@ -95,12 +96,26 @@ public:
 		}
 	}
 
+	/// Keep a key that was not used for up to `frames` purges in a row, with its resources, before dropping it.
+	/// A key that is used only every few frames (such as a framebuffer of one swapchain image) then keeps its resources.
+	/// The default, 0, drops a key at the first purge without a use.
+	void setMaxIdleFrames(size_t frames)
+	{
+		_maxIdleFrames = frames;
+	}
+
 	/// After submit, shrink pools and optionally destroy dropped handles via `onPurge`.
 	void purgeUnused(const PurgeHandleFn& onPurge = PurgeHandleFn())
 	{
 		for (auto it = _cache.begin(); it != _cache.end(); )
 		{
 			CacheEntry& cacheEntry = it->second;
+			if (cacheEntry.usedCount == 0 && cacheEntry.idleFrames < _maxIdleFrames)
+			{
+				++cacheEntry.idleFrames;
+				++it;
+				continue;
+			}
 			dropExcess(cacheEntry.resources, cacheEntry.usedCount, onPurge);
 			if (cacheEntry.usedCount == 0)
 			{
@@ -108,6 +123,7 @@ public:
 			}
 			else
 			{
+				cacheEntry.idleFrames = 0;
 				++it;
 			}
 		}
@@ -137,6 +153,7 @@ private:
 	struct CacheEntry
 	{
 		size_t usedCount = 0;
+		size_t idleFrames = 0;
 		std::vector<Storage> resources;
 	};
 
@@ -146,6 +163,7 @@ private:
 	static void dropExcess(std::vector<Storage>& resources, size_t usedCount, const PurgeHandleFn& onPurge);
 
 	std::vector<std::pair<Key, CacheEntry>> _cache;
+	size_t _maxIdleFrames = 0;
 };
 
 template<typename Key, typename Storage, typename Handle>

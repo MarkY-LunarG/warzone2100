@@ -54,7 +54,9 @@
 // transitionImageLayout, getVkImageHandle, and getVkImageAspect remain here as facades for vk/ friends.
 
 #include "gfx_api_vk.h"
+#include "screen.h"
 #include "shader_catalog.h"
+#include "png_util.h"
 #include "render_graph/layout_subresource.h"
 #include "render_graph/pass_resolve.h"
 #include "render_graph/scene_post_effects.h"
@@ -62,6 +64,9 @@
 #include "vk/layout_key_builder.h"
 #include "vk/layout_sync.h"
 #include "vk/layout_translation.h"
+#include "vk/object_counters.h"
+#include "vk/pipeline_names.h"
+#include "vk/vksc_bridge.h"
 #include "vk/transfer_recorder.h"
 #include "vk/transfer_recording_context.h"
 #include "lib/framework/physfs_ext.h"
@@ -75,6 +80,9 @@
 #include <limits>
 #include <chrono>
 #include <thread>
+#include <array>
+#include <fstream>
+#include <iterator>
 
 // Fix #define MemoryBarrier coming from winnt.h
 #undef MemoryBarrier
@@ -266,41 +274,6 @@ template <typename VKType, typename F, typename... Args>
 std::vector<VKType> GetVectorFromVKFunc(F &&func, Args &&... args)
 {
 	return GetVectorFromVKFuncWithExplicitInit(func, VKType(), args...);
-}
-
-static uint32_t findProperties(const vk::PhysicalDeviceMemoryProperties& memprops, const uint32_t& memoryTypeBits, const vk::MemoryPropertyFlagBits& properties, bool *memTypeFound = nullptr)
-{
-	for (uint32_t i = 0; i < memprops.memoryTypeCount; ++i)
-	{
-		if ((memoryTypeBits & (1 << i)) &&
-			((memprops.memoryTypes[i].propertyFlags & properties) == properties))
-		{
-			// Sanity checks: check that the heap exists and has a size > 0
-			auto currHeapIndex = memprops.memoryTypes[i].heapIndex;
-			if (currHeapIndex >= memprops.memoryHeapCount)
-			{
-				continue;
-			}
-			if (memprops.memoryHeaps[currHeapIndex].size == 0)
-			{
-				// A memoryHeap with size 0 is obviously useless
-				// Don't know why this would be advertised (but the "OpenCL, OpenGL, and Vulkan Compatibility Pack" has been detected doing this in certain cases, so best to check and ignore)
-				debug(LOG_INFO, "Ignoring memoryType[%" PRIu32 "] pointing to memoryHeap[%" PRIu32 "] with size 0", i, currHeapIndex);
-				continue;
-			}
-
-			if (memTypeFound)
-			{
-				*memTypeFound = true;
-			}
-			return i;
-		}
-	}
-	if (memTypeFound)
-	{
-		*memTypeFound = false;
-	}
-	return -1;
 }
 
 [[noreturn]] void handleUnrecoverableError(vk::Result reason)
@@ -641,6 +614,60 @@ bool VkRoot::findSupportedInstanceExtensions(std::vector<const char*> extensions
 	return true;
 }
 
+// MARK: Vulkan SC memory pools
+
+#if defined(WZ_VULKANSC)
+// Vulkan SC has no vkFreeMemory, and reserves every allocation at device creation. So every VMA
+// allocation comes from a pool whose blocks are all allocated when it is made, and never freed
+// (minBlockCount == maxBlockCount): the device memory is a fixed set of blocks, sub-allocated by VMA.
+// A full pool fails the allocation (VK_ERROR_OUT_OF_DEVICE_MEMORY).
+struct VulkanSCMemoryPool
+{
+	const char* name;
+	VmaMemoryUsage usage;
+	// The size of the pool: blockCount blocks of blockSize bytes, from the peaks the Vulkan SC build
+	// measured (reportVulkanSCMemoryPools) with the high profile and the long battle on the emulation ICD,
+	// with headroom for larger maps and mods. A block must hold the largest single allocation.
+	VkDeviceSize blockSize;
+	size_t blockCount;
+	VmaPool pool = VK_NULL_HANDLE;
+	uint32_t memoryTypeIndex = 0;
+	VkDeviceSize peakUsedBytes = 0;
+};
+
+static std::array<VulkanSCMemoryPool, 4> vulkanSCMemoryPools = {{
+	{ "device-local buffers", VMA_MEMORY_USAGE_GPU_ONLY, 64 * 1024 * 1024, 1 },        // peak 19 MB
+	{ "device-local images", VMA_MEMORY_USAGE_GPU_ONLY, 128 * 1024 * 1024, 3 },        // peak 153 MB
+	{ "streamed (host to device)", VMA_MEMORY_USAGE_CPU_TO_GPU, 8 * 1024 * 1024, 1 },  // peak 2.6 MB
+	{ "staging", VMA_MEMORY_USAGE_CPU_ONLY, 64 * 1024 * 1024, 2 },                     // peak 53 MB (texture loading)
+}};
+constexpr size_t vulkanSCBufferPool = 0;
+constexpr size_t vulkanSCImagePool = 1;
+constexpr size_t vulkanSCStreamedPool = 2;
+constexpr size_t vulkanSCStagingPool = 3;
+#endif
+
+// In the Vulkan SC build, puts the allocation in the pool for its usage. The desktop build uses VMA's default pools.
+static void selectMemoryPool(VmaAllocationCreateInfo& allocInfo, bool forImage)
+{
+#if defined(WZ_VULKANSC)
+	size_t index = vulkanSCBufferPool;
+	switch (allocInfo.usage)
+	{
+		case VMA_MEMORY_USAGE_GPU_ONLY: index = (forImage) ? vulkanSCImagePool : vulkanSCBufferPool; break;
+		case VMA_MEMORY_USAGE_CPU_TO_GPU: index = vulkanSCStreamedPool; break;
+		case VMA_MEMORY_USAGE_CPU_ONLY: index = vulkanSCStagingPool; break;
+		default:
+			ASSERT(false, "No Vulkan SC memory pool for VMA usage %d", static_cast<int>(allocInfo.usage));
+			break;
+	}
+	allocInfo.pool = vulkanSCMemoryPools[index].pool;
+#else
+	(void)allocInfo;
+	(void)forImage;
+#endif
+}
+
 // MARK: BlockBufferAllocator
 
 BlockBufferAllocator::BlockBufferAllocator(VmaAllocator allocator, uint32_t minimumBlockSize, const vk::BufferUsageFlags& usageFlags, const VmaAllocationCreateInfo& allocInfo, bool autoMap /* = false */)
@@ -691,7 +718,9 @@ void BlockBufferAllocator::allocateNewBlock(uint32_t minimumSize)
 
 	Block newBlock;
 	newBlock.size = newBlockSize;
-	vk::Result result = static_cast<vk::Result>(vmaCreateBuffer(allocator, reinterpret_cast<const VkBufferCreateInfo*>( &bufferCreateInfo ), &allocInfo, reinterpret_cast<VkBuffer*>( &newBlock.buffer ), &newBlock.allocation, nullptr));
+	VmaAllocationCreateInfo blockAllocInfo = allocInfo;
+	selectMemoryPool(blockAllocInfo, false);
+	vk::Result result = static_cast<vk::Result>(vmaCreateBuffer(allocator, reinterpret_cast<const VkBufferCreateInfo*>( &bufferCreateInfo ), &blockAllocInfo, reinterpret_cast<VkBuffer*>( &newBlock.buffer ), &newBlock.allocation, nullptr));
 	if (result != vk::Result::eSuccess)
 	{
 		// Failed to allocate memory!
@@ -786,6 +815,45 @@ void BlockBufferAllocator::flushAutomappedMemory()
 	}
 }
 
+void BlockBufferAllocator::flushAutomappedMemoryRanges(const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	ASSERT(autoMap, "Only useful when autoMap == true");
+	for (auto& block : blocks)
+	{
+		ASSERT(block.pMappedMemory != nullptr, "Block must still be (auto-)mapped");
+		flushMappedAllocationRange(allocator, block.allocation, false, vkDynLoader);
+	}
+}
+
+void flushMappedAllocationRange(VmaAllocator allocator, VmaAllocation allocation, bool invalidate, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	VmaAllocatorInfo allocatorInfo = {};
+	vmaGetAllocatorInfo(allocator, &allocatorInfo);
+	const VkPhysicalDeviceProperties* properties = nullptr;
+	vmaGetPhysicalDeviceProperties(allocator, &properties);
+	VmaAllocationInfo2 allocationInfo = {};
+	vmaGetAllocationInfo2(allocator, allocation, &allocationInfo);
+
+	// The range starts and ends at a multiple of nonCoherentAtomSize, or ends at the end of the memory
+	const VkDeviceSize atomSize = std::max<VkDeviceSize>(properties->limits.nonCoherentAtomSize, 1);
+	const VkDeviceSize begin = (allocationInfo.allocationInfo.offset / atomSize) * atomSize;
+	const VkDeviceSize alignedEnd = ((allocationInfo.allocationInfo.offset + allocationInfo.allocationInfo.size + atomSize - 1) / atomSize) * atomSize;
+	const VkDeviceSize end = std::min(alignedEnd, allocationInfo.blockSize);
+	const auto range = vk::MappedMemoryRange()
+		.setMemory(allocationInfo.allocationInfo.deviceMemory)
+		.setOffset(begin)
+		.setSize(end - begin);
+	const vk::Device device(allocatorInfo.device);
+	if (invalidate)
+	{
+		device.invalidateMappedMemoryRanges(range, vkDynLoader);
+	}
+	else
+	{
+		device.flushMappedMemoryRanges(range, vkDynLoader);
+	}
+}
+
 void BlockBufferAllocator::clean()
 {
 	if (autoMap)
@@ -803,6 +871,7 @@ void BlockBufferAllocator::clean()
 	{
 		totalMemoryUsed = totalMemoryAllocated - (blocks.back().size - currentWritePosInLastBlock);
 	}
+	peakUsed = std::max(peakUsed, totalMemoryUsed);
 
 	uint32_t old_minimumFirstBlockSize = minimumFirstBlockSize;
 	if (blocks.size() > 1)
@@ -845,7 +914,19 @@ void BlockBufferAllocator::clean()
 
 // MARK: perFrameResources_t
 
+#if defined(WZ_VULKANSC)
+// Vulkan SC reserves every descriptor set at device creation, and a pool cannot be destroyed. The Vulkan SC
+// build measured at most 106 combined image sampler sets and 32 uniform buffer sets in one frame.
+constexpr uint32_t vulkanSCDescriptorPoolMaxSets = 512;
+constexpr uint32_t descriptorPoolMaxSetsDefault = vulkanSCDescriptorPoolMaxSets;
+// Vulkan SC reserves command buffer memory when a command pool is made (VkCommandPoolMemoryReservationCreateInfo).
+// The emulation ICD measured at most 41 KB for the draw buffer and 65 KB for the copy buffer in one frame
+// (vkGetCommandPoolMemoryConsumption); another implementation can count differently, so measure on it.
+constexpr uint64_t vulkanSCDrawCommandBufferReservedSize = 1024 * 1024;
+constexpr uint64_t vulkanSCCopyCommandBufferReservedSize = 1024 * 1024;
+#else
 constexpr uint32_t descriptorPoolMaxSetsDefault = 10000;
+#endif
 constexpr uint32_t descriptorPoolSizeDescriptorCountDefault = 10000;
 
 perFrameResources_t::perFrameResources_t(vk::Device& _dev, const VmaAllocator& allocator, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
@@ -860,21 +941,38 @@ perFrameResources_t::perFrameResources_t(vk::Device& _dev, const VmaAllocator& a
 	combinedImageSamplerDescriptorPools.push_back(createNewDescriptorPool(vk::DescriptorType::eCombinedImageSampler, descriptorPoolMaxSetsDefault, descriptorPoolSizeDescriptorCountDefault));
 	uniformDynamicDescriptorPools.push_back(createNewDescriptorPool(vk::DescriptorType::eUniformBufferDynamic, descriptorPoolMaxSetsDefault, descriptorPoolSizeDescriptorCountDefault));
 
-	pool = dev.createCommandPool(
-		vk::CommandPoolCreateInfo()
-		.setQueueFamilyIndex(graphicsQueueFamilyIndex)
-		.setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer)
-		, nullptr, *pVkDynLoader
-	);
-	const auto buffer = dev.allocateCommandBuffers(
+	auto poolCreateInfo = vk::CommandPoolCreateInfo()
+		.setQueueFamilyIndex(graphicsQueueFamilyIndex);
+	auto copyPoolCreateInfo = vk::CommandPoolCreateInfo()
+		.setQueueFamilyIndex(graphicsQueueFamilyIndex);
+	if (uses_heavy_api_coverage)
+	{
+		// The copy command buffer is reset alone (vkResetCommandBuffer), not with its pool
+		copyPoolCreateInfo.setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+	}
+#if defined(WZ_VULKANSC)
+	// The draw pool also lends setupSwapchainImages() one command buffer
+	gfx_api::vk::sc::CommandPoolChainStorage poolChainStorage;
+	gfx_api::vk::sc::CommandPoolChainStorage copyPoolChainStorage;
+	poolCreateInfo.setPNext(gfx_api::vk::sc::commandPoolCreateInfoChain(poolChainStorage, 2, vulkanSCDrawCommandBufferReservedSize, nullptr));
+	copyPoolCreateInfo.setPNext(gfx_api::vk::sc::commandPoolCreateInfoChain(copyPoolChainStorage, 1, vulkanSCCopyCommandBufferReservedSize, nullptr));
+#endif
+	pool = dev.createCommandPool(poolCreateInfo, nullptr, *pVkDynLoader);
+	copyPool = dev.createCommandPool(copyPoolCreateInfo, nullptr, *pVkDynLoader);
+	cmdDraw = dev.allocateCommandBuffers(
 		vk::CommandBufferAllocateInfo()
 		.setCommandPool(pool)
-		.setCommandBufferCount(2)
+		.setCommandBufferCount(1)
 		.setLevel(vk::CommandBufferLevel::ePrimary)
 		, *pVkDynLoader
-	);
-	cmdDraw = buffer[0];
-	cmdCopy = buffer[1];
+	)[0];
+	cmdCopy = dev.allocateCommandBuffers(
+		vk::CommandBufferAllocateInfo()
+		.setCommandPool(copyPool)
+		.setCommandBufferCount(1)
+		.setLevel(vk::CommandBufferLevel::ePrimary)
+		, *pVkDynLoader
+	)[0];
 	pCurrentDrawCmdBuffer = &cmdDraw;
 	previousSubmission = dev.createFence(
 		vk::FenceCreateInfo().setFlags(vk::FenceCreateFlagBits::eSignaled),
@@ -972,6 +1070,10 @@ vk::DescriptorPool perFrameResources_t::getDescriptorPool(uint32_t numSets, vk::
 		{
 			// No more existing pools - need to create a new one
 			debug(LOG_INFO, "[%p] Creating new [%zu] descriptor pool of type: %s", (void*)this, pPools->currPool + 1, vk::to_string(descriptorType).c_str());
+#if defined(WZ_VULKANSC)
+			debug(LOG_ERROR, "Vulkan SC: a frame needs more than %" PRIu32 " descriptor sets of type %s, which the device did not reserve",
+				descriptorPoolMaxSetsDefault, vk::to_string(descriptorType).c_str());
+#endif
 			pPools->push_back(createNewDescriptorPool(descriptorType, descriptorPoolMaxSetsDefault, descriptorPoolSizeDescriptorCountDefault));
 			pPools->nextPool();
 		}
@@ -1032,6 +1134,7 @@ void perFrameResources_t::clean()
 perFrameResources_t::~perFrameResources_t()
 {
 	dev.destroyCommandPool(pool, nullptr, *pVkDynLoader);
+	dev.destroyCommandPool(copyPool, nullptr, *pVkDynLoader);
 	for (const auto& descriptorPoolDetails : combinedImageSamplerDescriptorPools.pools)
 	{
 		dev.destroyDescriptorPool(descriptorPoolDetails.poolHandle, nullptr, *pVkDynLoader);
@@ -1047,6 +1150,16 @@ perFrameResources_t::~perFrameResources_t()
 
 void perFrameResources_t::DescriptorPoolsContainer::reset(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
 {
+	size_t setsThisFrame = 0;
+	size_t descriptorsThisFrame = 0;
+	for (const auto& descriptorPool : pools)
+	{
+		setsThisFrame += descriptorPool.requestedSets;
+		descriptorsThisFrame += descriptorPool.requestedDescriptors;
+	}
+	peakSetsPerFrame = std::max(peakSetsPerFrame, setsThisFrame);
+	peakDescriptorsPerFrame = std::max(peakDescriptorsPerFrame, descriptorsThisFrame);
+
 	for (auto& descriptorPool : pools)
 	{
 		dev.resetDescriptorPool(descriptorPool.poolHandle, vk::DescriptorPoolResetFlags(), vkDynLoader);
@@ -1094,21 +1207,63 @@ perSwapchainImageResources_t::~perSwapchainImageResources_t()
 
 // MARK: buffering_mechanism
 
-void buffering_mechanism::init(vk::Device dev, const VmaAllocator& allocator, size_t swapChainImageCount, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+void buffering_mechanism::initFrames(vk::Device dev, const VmaAllocator& allocator, size_t numFrames, const uint32_t& graphicsQueueFamilyIndex, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
 {
+	ASSERT(perFrameResources.empty(), "Frame slots are already initialized");
 	currentFrame = 0;
 
-	for (size_t i = 0; i < std::min<size_t>(MAX_FRAMES_IN_FLIGHT, swapChainImageCount); ++i)
+	for (size_t i = 0; i < numFrames; ++i)
 	{
 		perFrameResources.emplace_back(new perFrameResources_t(dev, allocator, graphicsQueueFamilyIndex, vkDynLoader));
-	}
-	for (size_t i = 0; i < swapChainImageCount; ++i)
-	{
-		perSwapchainImageResources.emplace_back(new perSwapchainImageResources_t(dev, vkDynLoader));
 	}
 
 	const auto fences = std::array<vk::Fence, 1> { buffering_mechanism::get_current_resources().previousSubmission };
 	dev.resetFences(fences, vkDynLoader);
+}
+
+void buffering_mechanism::initSwapchainImages(vk::Device dev, size_t swapchainImageCount, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	ASSERT(perSwapchainImageResources.empty(), "Swapchain image resources are already initialized");
+	for (size_t i = 0; i < swapchainImageCount; ++i)
+	{
+		perSwapchainImageResources.emplace_back(new perSwapchainImageResources_t(dev, vkDynLoader));
+	}
+}
+
+void buffering_mechanism::resetFramesAfterIdle(vk::Device dev, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	for (auto& frameResources : perFrameResources)
+	{
+		dev.resetCommandPool(frameResources->pool, vk::CommandPoolResetFlags(), vkDynLoader);
+		dev.resetCommandPool(frameResources->copyPool, vk::CommandPoolResetFlags(), vkDynLoader);
+		frameResources->resetDescriptorPools();
+		frameResources->drawCmdBufferBegun = false;
+		frameResources->copyCmdBufferBegun = false;
+		frameResources->transferWorkRecorded = false;
+		frameResources->copyCmdBufferSubmittedSincePoolReset = false;
+		frameResources->swapchainImageAcquired = false;
+		frameResources->clean();
+		frameResources->numalloc = 0;
+
+		// A frame that was abandoned leaves its fence unsignaled, and an acquire that succeeded
+		// without a submit leaves its semaphore signaled, so make both again.
+		dev.destroyFence(frameResources->previousSubmission, nullptr, vkDynLoader);
+		frameResources->previousSubmission = dev.createFence(
+			vk::FenceCreateInfo().setFlags(vk::FenceCreateFlagBits::eSignaled),
+			nullptr, vkDynLoader
+		);
+		dev.destroySemaphore(frameResources->imageAcquireSemaphore, nullptr, vkDynLoader);
+		frameResources->imageAcquireSemaphore = dev.createSemaphore(vk::SemaphoreCreateInfo(), nullptr, vkDynLoader);
+	}
+
+	currentFrame = 0;
+	const auto fences = std::array<vk::Fence, 1> { buffering_mechanism::get_current_resources().previousSubmission };
+	dev.resetFences(fences, vkDynLoader);
+}
+
+void buffering_mechanism::destroySwapchainImages()
+{
+	perSwapchainImageResources.clear();
 }
 
 size_t buffering_mechanism::get_current_frame_num()
@@ -1126,15 +1281,43 @@ void buffering_mechanism::swap(vk::Device dev, const WZ_vk::DispatchLoaderDynami
 	currentFrame = (currentFrame < (perFrameResources.size() - 1)) ? currentFrame + 1 : 0;
 
 	const auto fences = std::array<vk::Fence, 1> { buffering_mechanism::get_current_resources().previousSubmission };
-	auto waitResult = dev.waitForFences(fences, true, -1, vkDynLoader);
-	if (waitResult == vk::Result::eTimeout)
+	// --api-coverage=heavy: no wait when the GPU is done with the frame slot already
+	const bool frameSlotFree = uses_heavy_api_coverage && (dev.getFenceStatus(fences[0], vkDynLoader) == vk::Result::eSuccess);
+	if (!frameSlotFree)
 	{
-		debug(LOG_ERROR, "buffering swap: waitForFences resulted in vk::Result::eTimeout");
-		handleUnrecoverableError(vk::Result::eTimeout);
+		auto waitResult = dev.waitForFences(fences, true, -1, vkDynLoader);
+		if (waitResult == vk::Result::eTimeout)
+		{
+			debug(LOG_ERROR, "buffering swap: waitForFences resulted in vk::Result::eTimeout");
+			handleUnrecoverableError(vk::Result::eTimeout);
+		}
 	}
 	dev.resetFences(fences, vkDynLoader);
+#if defined(WZ_VULKANSC)
+	{
+		// The memory each command buffer used, before the pool reset returns it (VkCommandPoolMemoryReservationCreateInfo)
+		static void* getConsumption = reinterpret_cast<void*>(vkDynLoader.vkGetDeviceProcAddr(static_cast<VkDevice>(dev), "vkGetCommandPoolMemoryConsumption"));
+		auto& frame = buffering_mechanism::get_current_resources();
+		const auto consumption = [&](vk::CommandPool pool, vk::CommandBuffer commandBuffer) -> uint64_t {
+			const VkCommandPool poolHandle = static_cast<VkCommandPool>(pool);
+			uint64_t poolValue = 0;
+			memcpy(&poolValue, &poolHandle, sizeof(poolHandle));
+			return gfx_api::vk::sc::commandBufferMemoryConsumption(static_cast<VkDevice>(dev), getConsumption, poolValue, static_cast<VkCommandBuffer>(commandBuffer));
+		};
+		frame.peakDrawCommandBufferBytes = std::max(frame.peakDrawCommandBufferBytes, consumption(frame.pool, frame.cmdDraw));
+		frame.peakCopyCommandBufferBytes = std::max(frame.peakCopyCommandBufferBytes, consumption(frame.copyPool, frame.cmdCopy));
+	}
+#endif
 	buffering_mechanism::get_current_resources().resetDescriptorPools();
 	dev.resetCommandPool(buffering_mechanism::get_current_resources().pool, vk::CommandPoolResetFlagBits(), vkDynLoader);
+	if (uses_heavy_api_coverage)
+	{
+		buffering_mechanism::get_current_resources().cmdCopy.reset(vk::CommandBufferResetFlags(), vkDynLoader);
+	}
+	else
+	{
+		dev.resetCommandPool(buffering_mechanism::get_current_resources().copyPool, vk::CommandPoolResetFlagBits(), vkDynLoader);
+	}
 	buffering_mechanism::get_current_resources().drawCmdBufferBegun = false;
 	buffering_mechanism::get_current_resources().copyCmdBufferBegun = false;
 	buffering_mechanism::get_current_resources().transferWorkRecorded = false;
@@ -1256,6 +1439,15 @@ VKAPI_ATTR VkBool32 VKAPI_CALL WZDebugUtilsCallback(
 		buf << "< no callback data? >";
 	}
 
+	// Debug aid: WZ_VULKAN_DEBUG_VALIDATION_NONFATAL=1 logs validation messages as errors instead of
+	// fatal errors, so that an unattended run (an autogame, a sweep) does not stop on a message box.
+	static const bool validationNonFatal = (getenv("WZ_VULKAN_DEBUG_VALIDATION_NONFATAL") != nullptr);
+	if (logFatal && validationNonFatal)
+	{
+		logFatal = false;
+		part = LOG_ERROR;
+	}
+
 	debugLogFromGfxCallback((logFatal) ? LOG_FATAL : part, "%s", buf.str().c_str());
 
 	return VK_FALSE;
@@ -1290,27 +1482,64 @@ std::vector<uint32_t> VkPSO::readShaderBuf(const std::string& name)
 	return buffer;
 }
 
-vk::ShaderModule VkPSO::get_module(const std::string& name, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+// The specialization constant values a pipeline is built with. Values that give the same shader output
+// are made equal, so that fewer distinct pipelines exist (Vulkan SC compiles each one offline):
+// - With shadow mode 0, or a filter size of 0, the shader ignores the filter size and the cascade count.
+// - Shadow mode 1 has three filter kernels: size <= 3, 4 to 5, and > 5.
+static gfx_api::lighting_constants pipelineSpecializationValues(gfx_api::lighting_constants values)
 {
-	const auto tmp = readShaderBuf(name);
-	ASSERT_OR_RETURN(vk::ShaderModule(), tmp.size() > 0, "Failed to read shader: %s", name.c_str());
-	return dev.createShaderModule(
-		vk::ShaderModuleCreateInfo()
-		.setCodeSize(tmp.size() * 4)
-		.setPCode(tmp.data())
-		, nullptr, vkDynLoader
-	);
+	const gfx_api::lighting_constants shaderDefaults;
+	if (values.shadowMode == 0 || values.shadowFilterSize == 0)
+	{
+		values.shadowMode = 0;
+		values.shadowFilterSize = shaderDefaults.shadowFilterSize;
+		values.shadowCascadesCount = shaderDefaults.shadowCascadesCount;
+	}
+	else if (values.shadowMode == 1)
+	{
+		values.shadowFilterSize = (values.shadowFilterSize <= 3) ? 3 : ((values.shadowFilterSize <= 5) ? 5 : 7);
+	}
+	return values;
 }
 
-std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule)
+// The SpecId decorations of a SPIR-V module.
+static std::vector<uint32_t> spirvSpecializationConstantIds(const std::vector<uint32_t>& code)
 {
+	constexpr uint32_t opDecorate = 71;
+	constexpr uint32_t decorationSpecId = 1;
+	std::vector<uint32_t> ids;
+	for (size_t i = 5; i < code.size(); )
+	{
+		const uint32_t wordCount = code[i] >> 16;
+		const uint32_t opcode = code[i] & 0xFFFF;
+		if (wordCount == 0)
+		{
+			break;
+		}
+		if (opcode == opDecorate && wordCount >= 4 && i + 3 < code.size() && code[i + 2] == decorationSpecId)
+		{
+			ids.push_back(code[i + 3]);
+		}
+		i += wordCount;
+	}
+	return ids;
+}
+
+vk::ShaderModule VkPSO::get_module(const std::string& name, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	return root->sharedPipelineObjects.shaderModule(dev, vkDynLoader, name, &VkPSO::readShaderBuf);
+}
+
+std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::ShaderModule& vertexModule, const vk::ShaderModule& tessControlModule, const vk::ShaderModule& tessEvalModule, const vk::ShaderModule& fragmentModule, bool hasTessellationStages)
+{
+	// In Vulkan SC every module is null: the pipeline cache has the shaders
 	std::vector<vk::PipelineShaderStageCreateInfo> stages;
 	stages.push_back(
 		vk::PipelineShaderStageCreateInfo()
 			.setModule(vertexModule)
 			.setPName("main")
 			.setStage(vk::ShaderStageFlagBits::eVertex));
-	if (tessControlModule)
+	if (hasTessellationStages)
 	{
 		stages.push_back(
 			vk::PipelineShaderStageCreateInfo()
@@ -1318,7 +1547,7 @@ std::vector<vk::PipelineShaderStageCreateInfo> VkPSO::get_stages(const vk::Shade
 				.setPName("main")
 				.setStage(vk::ShaderStageFlagBits::eTessellationControl));
 	}
-	if (tessEvalModule)
+	if (hasTessellationStages)
 	{
 		stages.push_back(
 			vk::PipelineShaderStageCreateInfo()
@@ -1752,11 +1981,8 @@ VkPSO::VkPSO(vk::Device _dev,
 				.setDescriptorType(vk::DescriptorType::eUniformBufferDynamic)
 				.setStageFlags(vk::ShaderStageFlagBits::eAllGraphics)
 		};
-		auto set_layout = dev.createDescriptorSetLayout(
-			vk::DescriptorSetLayoutCreateInfo()
-				.setBindingCount(1)
-				.setPBindings(cbuffer_layout_desc.data())
-			, nullptr, *pVkDynLoader);
+		auto set_layout = root->sharedPipelineObjects.descriptorSetLayout(dev, *pVkDynLoader,
+			std::vector<vk::DescriptorSetLayoutBinding>(cbuffer_layout_desc.begin(), cbuffer_layout_desc.end()));
 		cbuffer_set_layout.push_back(set_layout);
 		layout_desc.push_back(set_layout);
 	}
@@ -1775,14 +2001,17 @@ VkPSO::VkPSO(vk::Device _dev,
 	samplers.reserve(texture_desc.size());
 	for (const auto& texture : texture_desc)
 	{
-		samplers.emplace_back(dev.createSampler(to_vk(texture.sampler, texture.target, texture.border), nullptr, *pVkDynLoader));
+		const std::vector<uint64_t> samplerKey = { static_cast<uint64_t>(texture.sampler), static_cast<uint64_t>(texture.target), static_cast<uint64_t>(texture.border) };
+		samplers.emplace_back(root->sharedPipelineObjects.sampler(dev, *pVkDynLoader, samplerKey, to_vk(texture.sampler, texture.target, texture.border)));
 
 		textures_layout_desc.emplace_back(
 			vk::DescriptorSetLayoutBinding()
 				.setBinding(static_cast<uint32_t>(texture.id))
 				.setDescriptorCount(1)
 				.setDescriptorType(vk::DescriptorType::eCombinedImageSampler)
-				.setPImmutableSamplers(&samplers.back())
+				// Not immutable: bind_textures() writes the sampler with the image. Vulkan SC can limit
+				// immutable samplers (maxImmutableSamplersPerDescriptorSetLayout), and the pipeline JSON
+				// is simpler without them.
 				.setStageFlags(textureStageFlags(texture.stage))
 		);
 	}
@@ -1809,20 +2038,13 @@ VkPSO::VkPSO(vk::Device _dev,
 		}
 	}
 
-	textures_set_layout = dev.createDescriptorSetLayout(
-		vk::DescriptorSetLayoutCreateInfo()
-			.setBindingCount(static_cast<uint32_t>(textures_layout_desc.size()))
-			.setPBindings(textures_layout_desc.data())
-		, nullptr, *pVkDynLoader);
+	textures_set_layout = root->sharedPipelineObjects.descriptorSetLayout(dev, *pVkDynLoader, textures_layout_desc);
 	textures_first_set = static_cast<uint32_t>(layout_desc.size()); // Store descriptor set index for textures
 	layout_desc.push_back(textures_set_layout);
 
 
-	const auto layoutCreateInfo = vk::PipelineLayoutCreateInfo()
-		.setPSetLayouts(layout_desc.data())
-		.setSetLayoutCount(static_cast<uint32_t>(layout_desc.size()));
-	ASSERT(layoutCreateInfo.setLayoutCount <= limits.maxBoundDescriptorSets, "Pipeline layout set count (%" PRIu32") exceeds limits.maxBoundDescriptorSets (%" PRIu32")", layoutCreateInfo.setLayoutCount, limits.maxBoundDescriptorSets);
-	layout = dev.createPipelineLayout(layoutCreateInfo, nullptr, *pVkDynLoader);
+	ASSERT(layout_desc.size() <= limits.maxBoundDescriptorSets, "Pipeline layout set count (%zu) exceeds limits.maxBoundDescriptorSets (%" PRIu32")", layout_desc.size(), limits.maxBoundDescriptorSets);
+	layout = root->sharedPipelineObjects.pipelineLayout(dev, *pVkDynLoader, layout_desc);
 
 	const auto dynamicStates = std::array<vk::DynamicState, 3>{vk::DynamicState::eScissor, vk::DynamicState::eViewport, vk::DynamicState::eDepthBias};
 	const auto multisampleState = vk::PipelineMultisampleStateCreateInfo()
@@ -1895,6 +2117,7 @@ VkPSO::VkPSO(vk::Device _dev,
 	const std::string tessControlSpv = vk_stage_path(shaderInfo, gfx_api::shader_stage_kind::tess_control);
 	const std::string tessEvalSpv = vk_stage_path(shaderInfo, gfx_api::shader_stage_kind::tess_eval);
 	const std::string fragmentSpv = vk_stage_path(shaderInfo, gfx_api::shader_stage_kind::fragment);
+#if !defined(WZ_VULKANSC)
 	vertexShader = get_module(vertexSpv, *pVkDynLoader);
 	if (!tessControlSpv.empty())
 	{
@@ -1905,7 +2128,22 @@ VkPSO::VkPSO(vk::Device _dev,
 		tessEvalShader = get_module(tessEvalSpv, *pVkDynLoader);
 	}
 	fragmentShader = get_module(fragmentSpv, *pVkDynLoader);
-	auto pipelineStages = get_stages(vertexShader, tessControlShader, tessEvalShader, fragmentShader);
+#endif
+	auto pipelineStages = get_stages(vertexShader, tessControlShader, tessEvalShader, fragmentShader, hasTessStages);
+
+	// Every specialization constant the fragment shader declares must be given a value: Vulkan SC compiles
+	// the pipeline offline from these values, and its layer reports a pipeline without them.
+	if (!fragmentSpv.empty())
+	{
+		uint8_t declaredMask = 0;
+		for (const uint32_t id : spirvSpecializationConstantIds(readShaderBuf(fragmentSpv)))
+		{
+			declaredMask |= (id >= 1 && id <= 4) ? static_cast<uint8_t>(1u << (id - 1)) : 0x80;
+		}
+		ASSERT(declaredMask == shaderInfo.spec_constants, "%s declares specialization constants 0x%x, but the shader catalog gives 0x%x",
+			fragmentSpv.c_str(), static_cast<unsigned>(declaredMask), static_cast<unsigned>(shaderInfo.spec_constants));
+	}
+	const gfx_api::lighting_constants specValues = pipelineSpecializationValues(root->shadowConstants);
 
 	std::vector<char> specializationConstantsDataBuffer;
 	std::vector<vk::SpecializationMapEntry> specializationEntries;
@@ -1918,22 +2156,22 @@ VkPSO::VkPSO(vk::Device _dev,
 	};
 	if (shaderInfo.spec_constants & gfx_api::spec_shadow_mode)
 	{
-		appendSpecializationConstant_uint32(1, root->shadowConstants.shadowMode);
+		appendSpecializationConstant_uint32(1, specValues.shadowMode);
 		hasSpecializationConstant_ShadowConstants = true;
 	}
 	if (shaderInfo.spec_constants & gfx_api::spec_shadow_filter_size)
 	{
-		appendSpecializationConstant_uint32(2, root->shadowConstants.shadowFilterSize);
+		appendSpecializationConstant_uint32(2, specValues.shadowFilterSize);
 		hasSpecializationConstant_ShadowConstants = true;
 	}
 	if (shaderInfo.spec_constants & gfx_api::spec_shadow_cascades)
 	{
-		appendSpecializationConstant_uint32(3, root->shadowConstants.shadowCascadesCount);
+		appendSpecializationConstant_uint32(3, specValues.shadowCascadesCount);
 		hasSpecializationConstant_ShadowConstants = true;
 	}
 	if (shaderInfo.spec_constants & gfx_api::spec_point_light_enabled)
 	{
-		appendSpecializationConstant_uint32(4, static_cast<uint32_t>(root->shadowConstants.isPointLightPerPixelEnabled));
+		appendSpecializationConstant_uint32(4, static_cast<uint32_t>(specValues.isPointLightPerPixelEnabled));
 		hasSpecializationConstant_PointLightConstants = true;
 	}
 	if (!specializationEntries.empty())
@@ -1952,7 +2190,48 @@ VkPSO::VkPSO(vk::Device _dev,
 	const auto tessellationState = vk::PipelineTessellationStateCreateInfo()
 		.setPatchControlPoints(4);
 
-	const auto pso = vk::GraphicsPipelineCreateInfo()
+	// The pipeline's name: "<recipe>/<render pass class>/<specialization values>". Each specialization is its own
+	// Vulkan SC pipeline, and the Vulkan SC pipeline identifier is made from the name.
+	std::string pipelineName;
+	std::string recipe;
+	std::string renderPassClass;
+	std::string specialization;
+	std::vector<std::string> shaderFiles;
+#if defined(WZ_VULKANSC)
+	const bool needsPipelineName = true;
+#else
+	const bool needsPipelineName = (root->pipelineJsonExport != nullptr);
+#endif
+	if (needsPipelineName)
+	{
+		const auto appendValue = [&specialization](const char* prefix, uint32_t value) {
+			specialization += (specialization.empty() ? "" : ".") + std::string(prefix) + std::to_string(value);
+		};
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_mode) { appendValue("m", specValues.shadowMode); }
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_filter_size) { appendValue("f", specValues.shadowFilterSize); }
+		if (shaderInfo.spec_constants & gfx_api::spec_shadow_cascades) { appendValue("c", specValues.shadowCascadesCount); }
+		if (shaderInfo.spec_constants & gfx_api::spec_point_light_enabled) { appendValue("l", specValues.isPointLightPerPixelEnabled ? 1 : 0); }
+		if (specialization.empty())
+		{
+			specialization = "-";
+		}
+
+		// In the order get_stages() puts the stages in.
+		for (const auto kind : {gfx_api::shader_stage_kind::vertex, gfx_api::shader_stage_kind::tess_control, gfx_api::shader_stage_kind::tess_eval, gfx_api::shader_stage_kind::fragment})
+		{
+			const gfx_api::shader_stage_file* stage = gfx_api::find_stage(shaderInfo, kind);
+			if (stage != nullptr && stage->basename != nullptr)
+			{
+				shaderFiles.push_back(std::string(stage->basename) + ".spv");
+			}
+		}
+
+		recipe = gfx_api::vk::pipelineRecipeName(createInfo);
+		renderPassClass = root->renderPassClassNameFor(rp);
+		pipelineName = recipe + "/" + renderPassClass + "/" + specialization;
+	}
+
+	auto pso = vk::GraphicsPipelineCreateInfo()
 		.setPColorBlendState(&color_blend_state)
 		.setPDepthStencilState(&depthStencilState)
 		.setPRasterizationState(&rasterizationState)
@@ -1968,7 +2247,28 @@ VkPSO::VkPSO(vk::Device _dev,
 		.setPMultisampleState(&multisampleState)
 		.setRenderPass(rp);
 
-	vk::ResultValue<vk::Pipeline> result = dev.createGraphicsPipeline(vk::PipelineCache(), pso, nullptr, *pVkDynLoader);
+	vk::PipelineCache pipelineCache;
+#if defined(WZ_VULKANSC)
+	// The pipeline comes from the pipeline cache, by the identifier of its name
+	uint8_t pipelineIdentifier[VK_UUID_SIZE];
+	gfx_api::vk::PipelineJsonExport::pipelineIdentifier(pipelineName, pipelineIdentifier);
+	gfx_api::vk::sc::PipelineChainStorage offlineInfoStorage;
+	pso.setPNext(gfx_api::vk::sc::pipelineCreateInfoChain(offlineInfoStorage, pipelineIdentifier, gfx_api::vk::PipelineJsonExport::POOL_ENTRY_SIZE, nullptr));
+	pipelineCache = root->vulkanSCPipelineCache;
+#endif
+
+	vk::ResultValue<vk::Pipeline> result(vk::Result::eErrorUnknown, vk::Pipeline());
+	try {
+		result = dev.createGraphicsPipeline(pipelineCache, pso, nullptr, *pVkDynLoader);
+	}
+	catch (const vk::SystemError& e)
+	{
+#if defined(WZ_VULKANSC)
+		// VK_ERROR_NO_PIPELINE_MATCH: the pipeline cache was built without it (tools/vulkansc/export_pipelines.sh)
+		debug(LOG_ERROR, "Vulkan SC: could not create pipeline %s from the pipeline cache: %s", pipelineName.c_str(), e.what());
+#endif
+		throw;
+	}
 	switch (result.result)
 	{
 		case vk::Result::eSuccess:
@@ -1977,33 +2277,19 @@ VkPSO::VkPSO(vk::Device _dev,
 		default:
 			WZ_THROW_VK_RESULT_EXCEPTION(result.result, "createGraphicsPipeline");
 	}
+
+	if (root->pipelineJsonExport)
+	{
+		root->pipelineJsonExport->recordGraphicsPipeline(pipelineName, recipe, renderPassClass, specialization,
+			static_cast<const VkGraphicsPipelineCreateInfo&>(pso), shaderFiles);
+		root->pipelineJsonExport->recordRecipe(recipe, createInfo);
+	}
 }
 
 VkPSO::~VkPSO()
 {
+	// The layouts, samplers, and shader modules belong to VkRoot::sharedPipelineObjects.
 	dev.destroyPipeline(object, nullptr, *pVkDynLoader);
-	dev.destroyShaderModule(vertexShader, nullptr, *pVkDynLoader);
-	if (tessControlShader)
-	{
-		dev.destroyShaderModule(tessControlShader, nullptr, *pVkDynLoader);
-	}
-	if (tessEvalShader)
-	{
-		dev.destroyShaderModule(tessEvalShader, nullptr, *pVkDynLoader);
-	}
-	dev.destroyShaderModule(fragmentShader, nullptr, *pVkDynLoader);
-	dev.destroyPipelineLayout(layout, nullptr, *pVkDynLoader);
-	dev.destroyDescriptorSetLayout(textures_set_layout, nullptr, *pVkDynLoader);
-	for (auto & sampler : samplers)
-	{
-		dev.destroySampler(sampler, nullptr, *pVkDynLoader);
-	}
-	samplers.clear();
-	for (auto& descSetLayout : cbuffer_set_layout)
-	{
-		dev.destroyDescriptorSetLayout(descSetLayout, nullptr, *pVkDynLoader);
-	}
-	cbuffer_set_layout.clear();
 }
 
 // MARK: VkBuf
@@ -2026,11 +2312,23 @@ inline vk::BufferUsageFlags to_vk(const gfx_api::buffer::usage& usage)
 	return vk::BufferUsageFlags(); // silence warning
 }
 
-void VkBuf::allocateBufferObject(const std::size_t& size)
+void VkBuf::allocateBufferObject(const std::size_t& requestedSize)
 {
-	if (buffer_size == size)
+	// buffer_size is the capacity: a smaller upload reuses the buffer. A buffer that has to grow
+	// (its size changes from upload to upload, such as instance data) grows to the next power of two,
+	// so that it is not made again almost every frame. The first allocation is exact.
+	if (object && requestedSize <= buffer_size)
 	{
 		return;
+	}
+	size_t size = requestedSize;
+	if (object)
+	{
+		size = 1;
+		while (size < requestedSize)
+		{
+			size <<= 1;
+		}
 	}
 
 	buffering_mechanism::get_current_resources().buffer_to_delete.emplace_back(std::move(object));
@@ -2042,6 +2340,7 @@ void VkBuf::allocateBufferObject(const std::size_t& size)
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, false);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateBuffer(root->allocator, reinterpret_cast<const VkBufferCreateInfo*>( &bufferCreateInfo ), &allocInfo, reinterpret_cast<VkBuffer*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2231,6 +2530,7 @@ VkTexture::VkTexture(const VkRoot& root, const std::size_t& mipmap_count, const 
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2286,6 +2586,7 @@ VkDepthMapImage::VkDepthMapImage(const VkRoot& root, const std::size_t& _layer_c
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2519,6 +2820,7 @@ VkRenderedImage::VkRenderedImage(const VkRoot& root, size_t width, size_t height
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2698,6 +3000,7 @@ VkTextureArray::VkTextureArray(const VkRoot& root, size_t mipmap_count, size_t l
 
 	VmaAllocationCreateInfo allocInfo = {};
 	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
 
 	vk::Result result = static_cast<vk::Result>(vmaCreateImage(root.allocator, reinterpret_cast<const VkImageCreateInfo*>( &imageCreateInfo ), &allocInfo, reinterpret_cast<VkImage*>( &object ), &allocation, nullptr));
 	if (result != vk::Result::eSuccess)
@@ -2854,6 +3157,19 @@ VkRoot::~VkRoot()
 	// nothing, currently
 }
 
+const std::string& VkRoot::renderPassClassNameFor(vk::RenderPass renderPass) const
+{
+	static const std::string unknown = "unknown";
+	for (const auto& details : renderPasses)
+	{
+		if (details.rp == renderPass)
+		{
+			return details.className;
+		}
+	}
+	return unknown;
+}
+
 const VkRoot::RenderPassDetails& VkRoot::currentRenderPass()
 {
 	return renderPasses[currentRenderPassId];
@@ -2866,6 +3182,52 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 	{
 		VkPSOId* existingPSOId = static_cast<VkPSOId*>(existing_pso);
 		psoID = existingPSOId->psoID;
+	}
+
+#if defined(WZ_VULKANSC)
+	// Vulkan SC: every pipeline was created at startup (createManifestPipelines()). The game's recipe
+	// takes the place of the manifest's, which only knew the uniform blocks by name; nothing is built.
+	if (psoID.has_value())
+	{
+		return new VkPSOId(psoID.value(), false);
+	}
+	std::string name = gfx_api::vk::pipelineRecipeName(createInfo);
+	for (size_t i = 0; i < createdPipelines.size(); ++i)
+	{
+		auto& registry = createdPipelines[i];
+		if (registry.name != name)
+		{
+			continue;
+		}
+		ASSERT(gfx_api::vk::samePipelineRecipe(registry.createInfo, createInfo), "Pipeline recipe %s differs from the manifest's", name.c_str());
+		const bool hasPointLights = std::find(createInfo.uniform_blocks.begin(), createInfo.uniform_blocks.end(),
+			std::type_index(typeid(gfx_api::PointLightsUniforms))) != createInfo.uniform_blocks.end();
+		for (VkPSO* pipeline : registry.renderPassPSO)
+		{
+			if (pipeline != nullptr)
+			{
+				ASSERT(pipeline->hasLightDataBindings == hasPointLights, "Pipeline recipe %s: the manifest has the point lights block wrong", name.c_str());
+				pipeline->uniformBlockTypes = createInfo.uniform_blocks;
+			}
+		}
+		return new VkPSOId(i, false);
+	}
+	if (canCreatePipelines())
+	{
+		debug(LOG_ERROR, "Vulkan SC: pipeline recipe %s is not in the pipeline manifest; its draws are skipped (tools/vulkansc/export_pipelines.sh)", name.c_str());
+	}
+	createdPipelines.emplace_back(createInfo, std::move(name), renderPasses.size());
+	return new VkPSOId(createdPipelines.size() - 1, false);
+#endif
+	if (!canCreatePipelines())
+	{
+		// Register the recipe without building it
+		if (!psoID.has_value())
+		{
+			createdPipelines.emplace_back(createInfo, gfx_api::vk::pipelineRecipeName(createInfo), renderPasses.size());
+			psoID = createdPipelines.size() - 1;
+		}
+		return new VkPSOId(psoID.value(), false);
 	}
 
 	// build a pipeline, return an indirect VkPSOId (to enable rebuilding pipelines if needed)
@@ -2916,18 +3278,26 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 	}
 	if (!psoID.has_value())
 	{
-		createdPipelines.emplace_back(createInfo, renderPasses.size());
+		std::string name = gfx_api::vk::pipelineRecipeName(createInfo);
+		for (const auto& existing : createdPipelines)
+		{
+			ASSERT(existing.name != name || gfx_api::vk::samePipelineRecipe(existing.createInfo, createInfo),
+				"Two different pipeline recipes have the same name: %s", name.c_str());
+		}
+		debug(LOG_3D, "Built pipeline %s for render pass class %s", name.c_str(), currentRenderPass().className.c_str());
+		createdPipelines.emplace_back(createInfo, std::move(name), renderPasses.size());
 		psoID = createdPipelines.size() - 1;
-		createdPipelines[psoID.value()].renderPassPSO[currentRenderPassId] = pipeline;
+		createdPipelines[psoID.value()].renderPassPSO[currentRenderPass().psoSlot] = pipeline;
 	}
 	else
 	{
 		auto& builtPipelineRegistry = createdPipelines[psoID.value()];
-		if (builtPipelineRegistry.renderPassPSO[currentRenderPassId] != nullptr)
+		const size_t psoSlot = currentRenderPass().psoSlot;
+		if (builtPipelineRegistry.renderPassPSO[psoSlot] != nullptr)
 		{
-			buffering_mechanism::get_current_resources().pso_to_delete.emplace_back(builtPipelineRegistry.renderPassPSO[currentRenderPassId]);
+			buffering_mechanism::get_current_resources().pso_to_delete.emplace_back(builtPipelineRegistry.renderPassPSO[psoSlot]);
 		}
-		builtPipelineRegistry.renderPassPSO[currentRenderPassId] = pipeline;
+		builtPipelineRegistry.renderPassPSO[psoSlot] = pipeline;
 	}
 
 	return new VkPSOId(psoID.value(), false); // always return a new indirect reference
@@ -2935,6 +3305,10 @@ gfx_api::pipeline_state_object * VkRoot::build_pipeline(gfx_api::pipeline_state_
 
 void VkRoot::rebuildPipelinesIfNecessary()
 {
+#if defined(WZ_VULKANSC)
+	// No pipeline is created after startup (and a swapchain is never created again)
+	return;
+#endif
 	if (renderPasses.empty())
 	{
 		return;
@@ -2964,10 +3338,12 @@ void VkRoot::rebuildPipelinesIfNecessary()
 }
 
 // throws a vk::SystemError on an unrecoverable error (like OOM)
-static void createGPUImageAndViewInternal(const vk::PhysicalDevice& physicalDevice, const vk::PhysicalDeviceMemoryProperties& memprops, const vk::Device& dev,
+// The memory comes from VMA (in the Vulkan SC build, from the fixed image pool: selectMemoryPool()), so
+// that an attachment made again when the render settings change allocates no new device memory.
+static void createGPUImageAndViewInternal(VmaAllocator allocator, const vk::Device& dev,
 									const vk::Extent2D& extent, vk::SampleCountFlagBits msaaSamples, vk::Format imageFormat,
 									const vk::ImageUsageFlags imageUsageFlags, const vk::ImageAspectFlags& subresourceAspectFlags,
-									vk::Image& outputImage, vk::DeviceMemory& outputMemory, vk::ImageView& outputView,
+									vk::Image& outputImage, VmaAllocation& outputAllocation, vk::ImageView& outputView,
 									const WZ_vk::DispatchLoaderDynamic& vkDynLoader, const char *loggingKey)
 {
 	if (loggingKey == nullptr)
@@ -2975,59 +3351,40 @@ static void createGPUImageAndViewInternal(const vk::PhysicalDevice& physicalDevi
 		loggingKey = "n/a";
 	}
 
-	try {
-		outputImage = dev.createImage(
-			vk::ImageCreateInfo()
-			.setFormat(imageFormat)
-			.setArrayLayers(1)
-			.setExtent(vk::Extent3D(extent.width, extent.height, 1))
-			.setImageType(vk::ImageType::e2D)
-			.setMipLevels(1)
-			.setSamples(msaaSamples)
-			.setTiling(vk::ImageTiling::eOptimal)
-			.setUsage(imageUsageFlags)
-			.setSharingMode(vk::SharingMode::eExclusive)
-			, nullptr, vkDynLoader);
-	}
-	catch (const vk::OutOfHostMemoryError& e) {
-		debug(LOG_ERROR, "vkCreateImage (%s): OutOfHostMemoryError: %s", loggingKey, e.what());
-		throw;
-	}
-	catch (const vk::OutOfDeviceMemoryError& e) {
-		debug(LOG_ERROR, "vkCreateImage (%s): OutOfDeviceMemoryError: %s", loggingKey, e.what());
-		throw;
-	}
+	const auto imageCreateInfo = vk::ImageCreateInfo()
+		.setFormat(imageFormat)
+		.setArrayLayers(1)
+		.setExtent(vk::Extent3D(extent.width, extent.height, 1))
+		.setImageType(vk::ImageType::e2D)
+		.setMipLevels(1)
+		.setSamples(msaaSamples)
+		.setTiling(vk::ImageTiling::eOptimal)
+		.setUsage(imageUsageFlags)
+		.setSharingMode(vk::SharingMode::eExclusive);
 
-	const auto memreq = dev.getImageMemoryRequirements(outputImage, vkDynLoader);
-	ASSERT(memreq.size > 0, "Attempting to allocate memory of size 0 will fail");
-
-	bool foundMemTypeIndex = false;
-	uint32_t memoryTypeIndex = findProperties(memprops, memreq.memoryTypeBits, vk::MemoryPropertyFlagBits::eLazilyAllocated, &foundMemTypeIndex);
-	if (!foundMemTypeIndex || !(imageUsageFlags & vk::ImageUsageFlagBits::eTransientAttachment))
+	VmaAllocationCreateInfo allocInfo = {};
+	allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	selectMemoryPool(allocInfo, true);
+	VkResult result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+#if !defined(WZ_VULKANSC)
+	if (imageUsageFlags & vk::ImageUsageFlagBits::eTransientAttachment)
 	{
-		memoryTypeIndex = findProperties(memprops, memreq.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal, &foundMemTypeIndex);
+		// Lazily allocated memory where the device has it (tile-based GPUs); otherwise device local
+		VmaAllocationCreateInfo lazyAllocInfo = {};
+		lazyAllocInfo.usage = VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED;
+		result = vmaCreateImage(allocator, reinterpret_cast<const VkImageCreateInfo*>(&imageCreateInfo), &lazyAllocInfo,
+			reinterpret_cast<VkImage*>(&outputImage), &outputAllocation, nullptr);
 	}
-	if (!foundMemTypeIndex)
+#endif
+	if (result != VK_SUCCESS)
 	{
-		debug(LOG_ERROR, "Unable to find memory type index that matches: (memoryTypeBits: %" PRIu32 ")", memreq.memoryTypeBits);
-		WZ_THROW_VK_RESULT_EXCEPTION(vk::Result::eErrorOutOfDeviceMemory, "Unable to find memory type index that matches");
+		result = vmaCreateImage(allocator, reinterpret_cast<const VkImageCreateInfo*>(&imageCreateInfo), &allocInfo,
+			reinterpret_cast<VkImage*>(&outputImage), &outputAllocation, nullptr);
 	}
-
-	try {
-		outputMemory = dev.allocateMemory(
-			vk::MemoryAllocateInfo()
-				.setAllocationSize(memreq.size)
-				.setMemoryTypeIndex(memoryTypeIndex)
-			, nullptr, vkDynLoader);
-		dev.bindImageMemory(outputImage, outputMemory, 0, vkDynLoader);
-	}
-	catch (const vk::OutOfHostMemoryError& e) {
-		debug(LOG_ERROR, "vkAllocateMemory / vkBindImageMemory (%s): OutOfHostMemoryError: %s", loggingKey, e.what());
-		throw;
-	}
-	catch (const vk::OutOfDeviceMemoryError& e) {
-		debug(LOG_ERROR, "vkAllocateMemory / vkBindImageMemory (%s): OutOfDeviceMemoryError: %s", loggingKey, e.what());
-		throw;
+	if (result != VK_SUCCESS)
+	{
+		debug(LOG_ERROR, "vmaCreateImage (%s): %s", loggingKey, vk::to_string(static_cast<vk::Result>(result)).c_str());
+		WZ_THROW_VK_RESULT_EXCEPTION(static_cast<vk::Result>(result), "vmaCreateImage");
 	}
 
 	try {
@@ -3051,12 +3408,12 @@ static void createGPUImageAndViewInternal(const vk::PhysicalDevice& physicalDevi
 }
 
 // throws a vk::SystemError on an unrecoverable error (like OOM)
-static void createColorAttachmentImage(const vk::PhysicalDevice& physicalDevice, const vk::PhysicalDeviceMemoryProperties& memprops, const vk::Device& dev,
+static void createColorAttachmentImage(VmaAllocator allocator, const vk::Device& dev,
 									const vk::Extent2D& swapchainSize, vk::SampleCountFlagBits msaaSamples, vk::Format colorFormat,
-									vk::Image& colorImage, vk::DeviceMemory& colorImageMemory, vk::ImageView& colorImageView,
+									vk::Image& colorImage, VmaAllocation& colorImageMemory, vk::ImageView& colorImageView,
 									const WZ_vk::DispatchLoaderDynamic& vkDynLoader, const char *loggingKey = "colorImage")
 {
-	createGPUImageAndViewInternal(physicalDevice, memprops, dev,
+	createGPUImageAndViewInternal(allocator, dev,
 										 swapchainSize, msaaSamples, colorFormat,
 										 vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
 										 vk::ImageAspectFlagBits::eColor,
@@ -3065,9 +3422,9 @@ static void createColorAttachmentImage(const vk::PhysicalDevice& physicalDevice,
 }
 
 // throws a vk::SystemError on an unrecoverable error (like OOM)
-static void createDepthStencilImage(const vk::PhysicalDevice& physicalDevice, const vk::PhysicalDeviceMemoryProperties& memprops, const vk::Device& dev,
+static void createDepthStencilImage(VmaAllocator allocator, const vk::Device& dev,
 									const vk::Extent2D& swapchainSize, vk::SampleCountFlagBits msaaSamples, vk::Format depthFormat,
-									vk::Image& depthStencilImage, vk::DeviceMemory& depthStencilMemory, vk::ImageView& depthStencilView,
+									vk::Image& depthStencilImage, VmaAllocation& depthStencilMemory, vk::ImageView& depthStencilView,
 									const WZ_vk::DispatchLoaderDynamic& vkDynLoader, const char *loggingKey = "depthStencilImage",
 									bool enableShaderSampling = false)
 {
@@ -3077,7 +3434,7 @@ static void createDepthStencilImage(const vk::PhysicalDevice& physicalDevice, co
 		usage |= vk::ImageUsageFlagBits::eSampled;
 	}
 
-	createGPUImageAndViewInternal(physicalDevice, memprops, dev,
+	createGPUImageAndViewInternal(allocator, dev,
 										 swapchainSize, msaaSamples, depthFormat,
 										 // FUTURE TODO: Add vk::ImageUsageFlagBits::eTransientAttachment once we get rid of stencil shadows entirely
 										 usage,
@@ -3126,10 +3483,10 @@ void destroySurfaceGpuImage(VkRoot& root, VkSurfaceGpu& gpu)
 			frameResources.image_to_delete.emplace_back(gpu.image);
 			gpu.image = vk::Image();
 		}
-		if (gpu.memory)
+		if (gpu.allocation != VK_NULL_HANDLE)
 		{
-			frameResources.devicememory_to_free.emplace_back(gpu.memory);
-			gpu.memory = vk::DeviceMemory();
+			frameResources.vmamemory_to_free.emplace_back(gpu.allocation);
+			gpu.allocation = VK_NULL_HANDLE;
 		}
 		return;
 	}
@@ -3145,10 +3502,10 @@ void destroySurfaceGpuImage(VkRoot& root, VkSurfaceGpu& gpu)
 		root.dev.destroyImage(gpu.image, nullptr, root.vkDynLoader);
 		gpu.image = vk::Image();
 	}
-	if (gpu.memory)
+	if (gpu.allocation != VK_NULL_HANDLE)
 	{
-		root.dev.freeMemory(gpu.memory, nullptr, root.vkDynLoader);
-		gpu.memory = vk::DeviceMemory();
+		vmaFreeMemory(root.allocator, gpu.allocation);
+		gpu.allocation = VK_NULL_HANDLE;
 	}
 }
 
@@ -3239,8 +3596,8 @@ bool VkRoot::PipelineSurfaceAllocator::create(gfx_api::PipelineSurfaceId id, con
 			break;
 
 		case gfx_api::SurfaceProvisionMode::WsiPresentDepth:
-			createDepthStencilImage(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
-				gpu.image, gpu.memory, gpu.view, root.vkDynLoader, "swapchainDepthStencilImage");
+			createDepthStencilImage(root.allocator, root.dev, extent, vkSamples, vkFormat,
+				gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, "swapchainDepthStencilImage");
 			gpu.texture = std::make_unique<VkSwapchainDepthSurface>(root, vkFormat, vkSamples);
 			break;
 
@@ -3255,14 +3612,14 @@ bool VkRoot::PipelineSurfaceAllocator::create(gfx_api::PipelineSurfaceId id, con
 				break;
 			}
 			case gfx_api::SurfaceStorageKind::MsaaColorAttachment:
-				createColorAttachmentImage(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
-					gpu.image, gpu.memory, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
+				createColorAttachmentImage(root.allocator, root.dev, extent, vkSamples, vkFormat,
+					gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
 				gpu.texture = std::make_unique<VkAttachmentImage>(gpu.image, gpu.view, vkFormat, createSpec.width, createSpec.height, vkSamples,
 					pipelineSurfaceDebugName(id));
 				break;
 			case gfx_api::SurfaceStorageKind::DepthStencilAttachment:
-				createDepthStencilImage(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
-					gpu.image, gpu.memory, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
+				createDepthStencilImage(root.allocator, root.dev, extent, vkSamples, vkFormat,
+					gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
 				gpu.texture = std::make_unique<VkAttachmentImage>(gpu.image, gpu.view, vkFormat, createSpec.width, createSpec.height, vkSamples,
 					pipelineSurfaceDebugName(id));
 				break;
@@ -3296,10 +3653,10 @@ bool VkRoot::PipelineSurfaceAllocator::create(gfx_api::PipelineSurfaceId id, con
 			case gfx_api::SurfaceStorageKind::SampledDepth2D:
 			{
 				// Sample with depth-only aspect (matches ShadowMap cascade views).
-				createGPUImageAndViewInternal(root.physicalDevice, root.memprops, root.dev, extent, vkSamples, vkFormat,
+				createGPUImageAndViewInternal(root.allocator, root.dev, extent, vkSamples, vkFormat,
 					vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled,
 					vk::ImageAspectFlagBits::eDepth,
-					gpu.image, gpu.memory, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
+					gpu.image, gpu.allocation, gpu.view, root.vkDynLoader, pipelineSurfaceImageKey(id));
 				gpu.texture = std::make_unique<VkAttachmentImage>(gpu.image, gpu.view, vkFormat, createSpec.width, createSpec.height, vkSamples,
 					pipelineSurfaceDebugName(id));
 				break;
@@ -3898,9 +4255,29 @@ bool VkRoot::shouldDraw()
 
 void VkRoot::shutdown()
 {
+	if (pipelineJsonExport)
+	{
+		pipelineJsonExport->write();
+		sharedPipelineObjects.setPipelineJsonExport(nullptr);
+		pipelineJsonExport.reset();
+	}
+
 	_screenFrameOpen = false;
 	destroySwapchainAndSwapchainSpecificStuff(true);
-	// ShadowMap and other non-swapchain surfaces after swapchain/buffering teardown (GPU idle, FBs flushed).
+	_screenshotReadback.releaseStagingBuffers(vkDynLoader);
+	destroyDynamicRenderPasses();
+	flushDeferredFramebufferDeletes();
+	if (pDefaultTexture)
+	{
+		delete pDefaultTexture;
+		pDefaultTexture = nullptr;
+	}
+	if (pDefaultArrayTexture)
+	{
+		delete pDefaultArrayTexture;
+		pDefaultArrayTexture = nullptr;
+	}
+	// ShadowMap and other non-swapchain surfaces after swapchain teardown (GPU idle, FBs flushed).
 	resetAllPipelineSurfaceSlots();
 
 	destroyGpuTimingQueryPool();
@@ -3933,9 +4310,30 @@ void VkRoot::shutdown()
 		ASSERT(createdPipelines.empty(), "No device, but createdPipelines is not empty??");
 	}
 
+	// The frame slots hold VMA allocations and the deferred deletes, so they go before the allocator.
+	reportFrameResourcePeaks((validationLayer) ? LOG_INFO : LOG_3D);
+	buffering_mechanism::destroy(dev, vkDynLoader);
+	// Every pipeline is destroyed now, including the deferred ones.
+	if (dev)
+	{
+		sharedPipelineObjects.destroy(dev, vkDynLoader);
+#if defined(WZ_VULKANSC)
+		// Before the device: the Vulkan SC layer reports a pipeline cache that outlives the device (guide 6)
+		if (vulkanSCPipelineCache)
+		{
+			dev.destroyPipelineCache(vulkanSCPipelineCache, nullptr, vkDynLoader);
+			vulkanSCPipelineCache = vk::PipelineCache();
+		}
+#endif
+	}
+
 	// destroy allocator
 	if (allocator != VK_NULL_HANDLE)
 	{
+#if defined(WZ_VULKANSC)
+		reportVulkanSCMemoryPools((validationLayer) ? LOG_INFO : LOG_3D);
+		destroyVulkanSCMemoryPools();
+#endif
 		vmaDestroyAllocator(allocator);
 		allocator = VK_NULL_HANDLE;
 	}
@@ -3943,6 +4341,11 @@ void VkRoot::shutdown()
 	// destroy logical device
 	if (dev)
 	{
+		// Everything the device made is destroyed by now, so an object that is still live was leaked.
+		gfx_api::vk::reportObjectCounters((validationLayer) ? LOG_INFO : LOG_3D);
+#if defined(WZ_VULKANSC)
+		gfx_api::vk::sc::reportFaults(static_cast<VkDevice>(dev), reinterpret_cast<void*>(vkDynLoader.vkGetDeviceProcAddr(static_cast<VkDevice>(dev), "vkGetFaultData")), "shutdown");
+#endif
 		dev.destroy(nullptr, vkDynLoader);
 		dev = vk::Device();
 	}
@@ -4095,23 +4498,18 @@ void VkRoot::destroySwapchainAndSwapchainSpecificStuff(bool doDestroySwapchain)
 	finalizeActiveRecording();
 	waitForAllIdle();
 	_screenshotReadback.shutdown(vkDynLoader);
-	destroyDynamicRenderPasses();
-	flushDeferredFramebufferDeletes();
 
-	if (pDefaultTexture)
-	{
-		delete pDefaultTexture;
-		pDefaultTexture = nullptr;
-	}
-	if (pDefaultArrayTexture)
-	{
-		delete pDefaultArrayTexture;
-		pDefaultArrayTexture = nullptr;
-	}
+	// Render passes, pipelines and the frame slots do not depend on the swapchain, so they stay
+	// (createSwapchain() drops the render passes if the surface format changes).
+	// Framebuffers can name swapchain image views, so all of them go.
+	bumpRenderGraphEpoch();
+	invalidateWarmEntries();
+	clearFramebufferCache();
+	flushDeferredFramebufferDeletes();
 
 	resetSwapchainPipelineSurfaceSlots();
 
-	buffering_mechanism::destroy(dev, vkDynLoader);
+	buffering_mechanism::destroySwapchainImages();
 
 	resetImageLayoutTracker();
 
@@ -4140,6 +4538,14 @@ void VkRoot::destroySwapchainAndSwapchainSpecificStuff(bool doDestroySwapchain)
 void VkRoot::handleSurfaceLost()
 {
 	debug(LOG_3D, "handleSurfaceLost()");
+#if defined(WZ_VULKANSC)
+	// The display surface outlives the swapchain, which cannot be replaced
+	if (swapchain)
+	{
+		debug(LOG_FATAL, "Vulkan SC: the display surface was lost");
+		WZ_THROW_VK_RESULT_EXCEPTION(vk::Result::eErrorSurfaceLostKHR, "Vulkan SC: surface lost");
+	}
+#endif
 
 	destroySwapchainAndSwapchainSpecificStuff(true);
 
@@ -4204,6 +4610,15 @@ void VkRoot::handleSurfaceLost()
 // throws a vk::SystemError on an unrecoverable error (like OOM)
 void VkRoot::createNewSwapchainAndSwapchainSpecificStuff(const vk::Result& reason)
 {
+#if defined(WZ_VULKANSC)
+	// Vulkan SC presents to a display mode that does not change, and has no vkDestroySwapchainKHR:
+	// the one swapchain is never replaced.
+	if (swapchain)
+	{
+		debug(LOG_FATAL, "Vulkan SC: the swapchain cannot be made again (%s)", to_string(reason).c_str());
+		WZ_THROW_VK_RESULT_EXCEPTION(reason, "Vulkan SC: swapchain recreate");
+	}
+#endif
 	// ensure we don't end up in endless recursion because of failures
 	if (errorHandlingDepth.size() > maxErrorHandlingDepth)
 	{
@@ -4272,6 +4687,23 @@ void VkRoot::createNewSwapchainAndSwapchainSpecificStuff(const vk::Result& reaso
 
 vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats)
 {
+	// Debug aid: WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT=<VkFormat value> uses that format if the surface has it.
+	// The Vulkan SC pipeline export uses it to build the swapchain render passes with the format of the
+	// Vulkan SC display, which a desktop window may not prefer (the pipelines name the format).
+	if (const char* forcedFormatValue = getenv("WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT"))
+	{
+		const auto forcedFormat = static_cast<vk::Format>(strtol(forcedFormatValue, nullptr, 10));
+		for (const auto& availableFormat : availableFormats)
+		{
+			if (availableFormat.format == forcedFormat)
+			{
+				debug(LOG_INFO, "Using the forced swapchain format: %s", to_string(forcedFormat).c_str());
+				return availableFormat;
+			}
+		}
+		debug(LOG_ERROR, "WZ_VULKAN_FORCE_SWAPCHAIN_FORMAT: the surface does not have %s", to_string(forcedFormat).c_str());
+	}
+
 	const auto desiredFormats = std::array<vk::SurfaceFormatKHR, 4> {
 		vk::SurfaceFormatKHR{ vk::Format::eA2B10G10R10UnormPack32, vk::ColorSpaceKHR::eSrgbNonlinear },
 		vk::SurfaceFormatKHR{ vk::Format::eA2R10G10B10UnormPack32, vk::ColorSpaceKHR::eSrgbNonlinear },
@@ -4515,7 +4947,14 @@ void VkRoot::createSwapchain(bool allowHandleSurfaceLost)
 	}
 
 	// pick surface format
+	const vk::Format previousSurfaceFormat = surfaceFormat.format;
 	surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
+	if (surfaceFormat.format != previousSurfaceFormat && !renderPasses.empty())
+	{
+		// Render passes that write the swapchain, and their pipelines, name its format.
+		debug(LOG_3D, "Surface format changed: rebuilding render passes and pipelines");
+		destroyDynamicRenderPasses();
+	}
 	debug(LOG_3D, "Using surface format: %s - %s", to_string(surfaceFormat.format).c_str(), to_string(surfaceFormat.colorSpace).c_str());
 
 	// pick compositeAlpha
@@ -4610,7 +5049,18 @@ void VkRoot::createSwapchain(bool allowHandleSurfaceLost)
 	//
 
 	try {
-		buffering_mechanism::init(dev, allocator, swapchainImages.size(), queueFamilyIndices.graphicsFamily.value(), vkDynLoader);
+		if (!buffering_mechanism::isInitialized())
+		{
+			buffering_mechanism::initFrames(dev, allocator, std::min<size_t>(MAX_FRAMES_IN_FLIGHT, swapchainImages.size()), queueFamilyIndices.graphicsFamily.value(), vkDynLoader);
+		}
+		else
+		{
+			// destroySwapchainAndSwapchainSpecificStuff() waited for the device to be idle.
+			buffering_mechanism::resetFramesAfterIdle(dev, vkDynLoader);
+		}
+		buffering_mechanism::initSwapchainImages(dev, swapchainImages.size(), vkDynLoader);
+		// A framebuffer that writes one swapchain image is used once every swapchainImages.size() frames.
+		_framebufferCache.setMaxIdleFrames(swapchainImages.size());
 	}
 	catch (const vk::SystemError &e) {
 		auto resultErr = static_cast<vk::Result>(e.code().value());
@@ -4650,23 +5100,26 @@ void VkRoot::createSwapchain(bool allowHandleSurfaceLost)
 	}
 	currentSwapchainIndex = 0;
 
-	// create defaultTexture (2x2, all initialized to 0)
-	const size_t defaultTexture_width = 2;
-	const size_t defaultTexture_height = 2;
-	pDefaultTexture = new VkTexture(*this, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_texture>");
-	pDefaultArrayTexture = new VkTextureArray(*this, 1, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_array_texture>");
+	// create defaultTexture (2x2, all initialized to 0), once: it does not depend on the swapchain
+	if (pDefaultTexture == nullptr)
+	{
+		const size_t defaultTexture_width = 2;
+		const size_t defaultTexture_height = 2;
+		pDefaultTexture = new VkTexture(*this, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_texture>");
+		pDefaultArrayTexture = new VkTextureArray(*this, 1, 1, defaultTexture_width, defaultTexture_height, gfx_api::pixel_format::FORMAT_RGBA8_UNORM_PACK8, "<default_array_texture>");
 
-	iV_Image defaultTexture;
-	defaultTexture.allocate(defaultTexture_width, defaultTexture_height, 4, true);
-	if (!pDefaultTexture->upload(0, defaultTexture))
-	{
-		debug(LOG_ERROR, "Failed to upload default texture??");
+		iV_Image defaultTexture;
+		defaultTexture.allocate(defaultTexture_width, defaultTexture_height, 4, true);
+		if (!pDefaultTexture->upload(0, defaultTexture))
+		{
+			debug(LOG_ERROR, "Failed to upload default texture??");
+		}
+		if (!pDefaultArrayTexture->upload_layer(0, 0, defaultTexture))
+		{
+			debug(LOG_ERROR, "Failed to upload default array texture??");
+		}
+		pDefaultArrayTexture->flush();
 	}
-	if (!pDefaultArrayTexture->upload_layer(0, 0, defaultTexture))
-	{
-		debug(LOG_ERROR, "Failed to upload default array texture??");
-	}
-	pDefaultArrayTexture->flush();
 
 	_screenFrameCoordinator.presentation().syncDrawableSize(w, h);
 }
@@ -4733,16 +5186,30 @@ static uint32_t getVKSuggestedDefaultDepthBufferResolution(const vk::PhysicalDev
 	return 2048;
 }
 
+#if defined(WZ_VULKANSC)
+// Vulkan SC 1.0 has the core API of Vulkan 1.2. Its version numbers carry the API variant (1) in the
+// top bits, which the VK_VERSION_* comparisons would read as a very large Vulkan version.
+static const uint32_t vulkanSCCoreVulkanVersion = VK_API_VERSION_1_2;
+#endif
+
 bool VkRoot::canUseVulkanInstanceAPI(uint32_t minVulkanAPICoreVersion) const
 {
 	ASSERT(inst, "Instance is null");
+#if defined(WZ_VULKANSC)
+	return VK_VERSION_GREATER_THAN_OR_EQUAL(vulkanSCCoreVulkanVersion, minVulkanAPICoreVersion);
+#else
 	return VK_VERSION_GREATER_THAN_OR_EQUAL(appInfo.apiVersion, minVulkanAPICoreVersion);
+#endif
 }
 
 bool VkRoot::canUseVulkanDeviceAPI(uint32_t minVulkanAPICoreVersion) const
 {
 	ASSERT(physicalDevice, "Physical device is null");
+#if defined(WZ_VULKANSC)
+	return VK_VERSION_GREATER_THAN_OR_EQUAL(vulkanSCCoreVulkanVersion, minVulkanAPICoreVersion);
+#else
 	return VK_VERSION_GREATER_THAN_OR_EQUAL(appInfo.apiVersion, minVulkanAPICoreVersion) && VK_VERSION_GREATER_THAN_OR_EQUAL(physDeviceProps.apiVersion, minVulkanAPICoreVersion);
+#endif
 }
 
 bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t antialiasing, swap_interval_mode requestedSwapMode, optional<float> /*mipLodBias*/, uint32_t _depthMapResolution)
@@ -4794,6 +5261,9 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 			(uint32_t)VK_MAKE_VERSION(VK_VERSION_MAJOR(instanceVersion), VK_VERSION_MINOR(instanceVersion), 0),
 			maxRequestableInstanceVulkanVersion
 	); // cap requestedInstanceApiVersion to maxRequestableInstanceVulkanVersion
+#if defined(WZ_VULKANSC)
+	requestedInstanceApiVersion = gfx_api::vk::sc::apiVersion();
+#endif
 
 	try {
 		debugInfo.Output_GlobalInstanceExtensions(_vkGetInstanceProcAddr);
@@ -4889,6 +5359,21 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 			return false;
 		}
 		instanceExtensions.insert(std::end(instanceExtensions), supportedOptionalInstanceExtensions.begin(), supportedOptionalInstanceExtensions.end());
+	}
+
+	// --api-coverage=heavy: the extensions of the surface queries in logApiCoverageInfo()
+	if (uses_heavy_api_coverage)
+	{
+		std::vector<const char*> coverageInstanceExtensions = { VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME };
+		if (instanceExtensionEnabled(VK_KHR_DISPLAY_EXTENSION_NAME))
+		{
+			coverageInstanceExtensions.push_back(VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME);
+		}
+		std::vector<const char*> supportedCoverageInstanceExtensions;
+		if (findSupportedInstanceExtensions(coverageInstanceExtensions, supportedCoverageInstanceExtensions, _vkGetInstanceProcAddr))
+		{
+			instanceExtensions.insert(std::end(instanceExtensions), supportedCoverageInstanceExtensions.begin(), supportedCoverageInstanceExtensions.end());
+		}
 	}
 
 	if (!createVulkanInstance(requestedInstanceApiVersion, instanceExtensions, layers, _vkGetInstanceProcAddr))
@@ -5056,6 +5541,13 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 		return false;
 	}
 
+	if (uses_heavy_api_coverage)
+	{
+		logApiCoverageInfo();
+		// GPU frame timing for every frame, not only with dynamic resolution
+		setGpuFrameTimingEnabled(true);
+	}
+
 	if (depthMapSize == 0)
 	{
 		depthMapSize = getVKSuggestedDefaultDepthBufferResolution(physDeviceProps, memprops);
@@ -5079,6 +5571,11 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 	frameResources.ensureTransferRecordingBegun(vkDynLoader);
 	frameResources.copyCmdBuffer().pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe, vk::PipelineStageFlagBits::eAllGraphics,
 		vk::DependencyFlags(), nullptr, nullptr, imageMemoryBarriers_TransitionDefaultDepthImage, vkDynLoader);
+
+#if defined(WZ_VULKANSC)
+	createManifestPipelines();
+#endif
+	gfx_api::vk::markObjectCountersStartupComplete();
 
 	return true;
 }
@@ -5229,6 +5726,304 @@ bool VkRoot::getQueueFamiliesInfo()
 	return true;
 }
 
+#if defined(WZ_VULKANSC)
+
+// The most objects of each type that are alive at one time (VkDeviceObjectReservationCreateInfo).
+// From the peaks the Vulkan SC build measured (gfx_api::vk::reportObjectCounters) with the high profile and
+// the long battle on the emulation ICD, with headroom. Memory, command pools, descriptor pools, query pools,
+// and the swapchain are never freed in Vulkan SC, so for them the count is the total ever made.
+gfx_api::vk::sc::DeviceReservation VkRoot::vulkanSCDeviceReservation() const
+{
+	gfx_api::vk::sc::DeviceReservation r;
+	r.semaphoreRequestCount = 16;             // peak 5
+	r.commandBufferRequestCount = 8;          // peak 5
+	r.fenceRequestCount = 8;                  // peak 2
+	r.deviceMemoryRequestCount = 32;          // 16 in total: the memory pool blocks and 4 render targets
+	r.bufferRequestCount = 4096;              // peak 3006 (the game's models)
+	r.imageRequestCount = 512;                // peak 209
+	r.queryPoolRequestCount = 1;
+	r.imageViewRequestCount = 512;            // peak 215
+	r.layeredImageViewRequestCount = 8;       // peak 3
+	r.pipelineCacheRequestCount = 1;
+	r.pipelineLayoutRequestCount = 16;        // peak 7
+	r.renderPassRequestCount = 32;            // peak 13
+	r.graphicsPipelineRequestCount = 0;       // from the pipeline cache, below
+	r.descriptorSetLayoutRequestCount = 16;   // peak 7
+	r.samplerRequestCount = 16;               // peak 7
+	r.descriptorPoolRequestCount = 2 * MAX_FRAMES_IN_FLIGHT;
+	r.descriptorSetRequestCount = 2 * MAX_FRAMES_IN_FLIGHT * vulkanSCDescriptorPoolMaxSets;
+	r.framebufferRequestCount = 64;           // peak 26
+	r.commandPoolRequestCount = 2 * MAX_FRAMES_IN_FLIGHT;
+	r.surfaceRequestCount = 1;
+	r.swapchainRequestCount = 1;
+	r.displayModeRequestCount = 1;
+	r.subpassDescriptionRequestCount = 32;    // peak 13
+	r.attachmentDescriptionRequestCount = 64; // peak 21
+	r.descriptorSetLayoutBindingRequestCount = 64; // peak 27
+	r.descriptorSetLayoutBindingLimit = 32;   // peak 16
+	// A view of an image of 16384 texels has at most 15 mip levels (peak 12)
+	r.maxImageViewMipLevels = 15;
+	r.maxImageViewArrayLayers = 256;          // peak 78 (terrain texture arrays)
+	r.maxLayeredImageViewMipLevels = 15;      // peak 11
+	r.maxTimestampQueriesPerPool = 2 * GPU_TIMING_SLOTS;
+	if (!vulkanSCPipelineCacheData.empty())
+	{
+		// One pool entry for each pipeline in the cache: each is created once, at startup (createManifestPipelines())
+		r.pipelineCacheData = vulkanSCPipelineCacheData.data();
+		r.pipelineCacheSize = vulkanSCPipelineCacheData.size();
+		r.pipelinePoolEntryCount = vulkanSCPipelineCount;
+		r.pipelinePoolEntrySize = gfx_api::vk::PipelineJsonExport::POOL_ENTRY_SIZE;
+		r.graphicsPipelineRequestCount = vulkanSCPipelineCount;
+	}
+	return r;
+}
+
+// The pipeline cache: WZ_VULKANSC_PIPELINE_CACHE=<file>, or shaders/vksc/wz2100.vksc.bin in the data
+// (the build makes it with the pipeline cache compiler it was configured with).
+bool VkRoot::loadVulkanSCPipelineCache()
+{
+	vulkanSCPipelineCacheData.clear();
+	vulkanSCPipelineCount = 0;
+	if (const char* cacheFile = getenv("WZ_VULKANSC_PIPELINE_CACHE"))
+	{
+		std::ifstream file(cacheFile, std::ios::binary);
+		if (!file.is_open())
+		{
+			debug(LOG_ERROR, "Vulkan SC: could not open the pipeline cache %s", cacheFile);
+			return false;
+		}
+		vulkanSCPipelineCacheData.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+		debug(LOG_INFO, "Vulkan SC pipeline cache: %s", cacheFile);
+	}
+	else
+	{
+		const char* cachePath = "shaders/vksc/wz2100.vksc.bin";
+		PHYSFS_file* fp = PHYSFS_openRead(cachePath);
+		if (fp == nullptr)
+		{
+			debug(LOG_INFO, "Vulkan SC: no pipeline cache (%s); nothing is drawn", cachePath);
+			return false;
+		}
+		const PHYSFS_sint64 fileSize = PHYSFS_fileLength(fp);
+		if (fileSize > 0 && fileSize < std::numeric_limits<PHYSFS_sint32>::max())
+		{
+			vulkanSCPipelineCacheData.resize(static_cast<size_t>(fileSize));
+			WZ_PHYSFS_readBytes(fp, vulkanSCPipelineCacheData.data(), static_cast<PHYSFS_uint32>(fileSize));
+		}
+		PHYSFS_close(fp);
+		debug(LOG_INFO, "Vulkan SC pipeline cache: %s (from %s)", cachePath, PHYSFS_getRealDir(cachePath));
+	}
+	vulkanSCPipelineCount = gfx_api::vk::sc::pipelineCacheEntryCount(vulkanSCPipelineCacheData.data(), vulkanSCPipelineCacheData.size());
+	if (vulkanSCPipelineCount == 0)
+	{
+		debug(LOG_ERROR, "Vulkan SC: the pipeline cache is not a Vulkan SC pipeline cache, or has no pipelines");
+		vulkanSCPipelineCacheData.clear();
+		return false;
+	}
+	debug(LOG_INFO, "Vulkan SC pipeline cache: %u pipelines, %zu bytes", vulkanSCPipelineCount, vulkanSCPipelineCacheData.size());
+	return true;
+}
+
+bool VkRoot::createManifestPipelines()
+{
+	if (!canCreatePipelines())
+	{
+		return false;
+	}
+
+	// The manifest that came with the pipeline cache: base.wz, or WZ_VULKANSC_PIPELINE_MANIFEST with
+	// WZ_VULKANSC_PIPELINE_CACHE
+	std::string manifestText;
+	const char* manifestPath = "shaders/vksc/wz2100_pipelines.json";
+	if (const char* manifestFile = getenv("WZ_VULKANSC_PIPELINE_MANIFEST"))
+	{
+		std::ifstream file(manifestFile, std::ios::binary);
+		if (!file.is_open())
+		{
+			debug(LOG_ERROR, "Vulkan SC: could not open the pipeline manifest %s", manifestFile);
+			return false;
+		}
+		manifestText.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+		manifestPath = manifestFile;
+	}
+	else
+	{
+		PHYSFS_file* fp = PHYSFS_openRead(manifestPath);
+		if (fp == nullptr)
+		{
+			debug(LOG_ERROR, "Vulkan SC: no pipeline manifest (%s); nothing is drawn", manifestPath);
+			return false;
+		}
+		const PHYSFS_sint64 fileSize = PHYSFS_fileLength(fp);
+		if (fileSize > 0 && fileSize < std::numeric_limits<PHYSFS_sint32>::max())
+		{
+			manifestText.resize(static_cast<size_t>(fileSize));
+			WZ_PHYSFS_readBytes(fp, manifestText.data(), static_cast<PHYSFS_uint32>(fileSize));
+		}
+		PHYSFS_close(fp);
+	}
+	const nlohmann::json manifest = nlohmann::json::parse(manifestText, nullptr, false);
+	if (!manifest.is_object() || !manifest.contains("pipelines") || !manifest.contains("recipes") || !manifest.contains("renderPassClasses"))
+	{
+		debug(LOG_ERROR, "Vulkan SC: %s is not a pipeline manifest with recipes (export it again: tools/vulkansc/export_pipelines.sh)", manifestPath);
+		return false;
+	}
+	const nlohmann::json& pipelines = manifest["pipelines"];
+
+	// The specialization values: the graphics profile's, the same in every pipeline that has them
+	std::map<char, std::string> specializationValues;
+	gfx_api::lighting_constants constants = shadowConstants;
+	for (const auto& pipeline : pipelines.items())
+	{
+		const std::string specialization = pipeline.value().value("specialization", "-");
+		if (!gfx_api::vk::parseSpecialization(specialization, constants))
+		{
+			debug(LOG_ERROR, "Vulkan SC: pipeline %s has a specialization the build cannot read: %s", pipeline.key().c_str(), specialization.c_str());
+			continue;
+		}
+		std::istringstream values(specialization);
+		std::string value;
+		while (specialization != "-" && std::getline(values, value, '.'))
+		{
+			const auto inserted = specializationValues.emplace(value[0], value);
+			if (inserted.first->second != value)
+			{
+				debug(LOG_ERROR, "Vulkan SC: the pipeline manifest has two values of one specialization constant (%s and %s): it must be for one graphics profile",
+					inserted.first->second.c_str(), value.c_str());
+			}
+		}
+	}
+	shadowConstants = constants;
+
+	// A render pass of each compatibility class: the render graph's own render passes of the class
+	// share its pipelines (RenderPassDetails::psoSlot)
+	std::map<std::string, size_t> classRenderPasses;
+	for (const auto& renderPassClass : manifest["renderPassClasses"].items())
+	{
+		const auto key = gfx_api::vk::passLayoutKeyFromJson(renderPassClass.value());
+		if (!key.has_value())
+		{
+			continue;
+		}
+		const size_t renderPassId = getOrCreatePassRenderPassId(key.value());
+		if (renderPasses[renderPassId].className != renderPassClass.key())
+		{
+			debug(LOG_ERROR, "Vulkan SC: the render pass layout of class %s makes class %s (export the pipelines again)",
+				renderPassClass.key().c_str(), renderPasses[renderPassId].className.c_str());
+			continue;
+		}
+		classRenderPasses.emplace(renderPassClass.key(), renderPassId);
+	}
+
+	// The recipes, checked against their names (which hash what they hold)
+	std::map<std::string, size_t> recipeIds;
+	for (const auto& recipe : manifest["recipes"].items())
+	{
+		const auto createInfo = gfx_api::vk::recipeFromJson(recipe.value(), manifestRecipeNames);
+		if (!createInfo.has_value())
+		{
+			continue;
+		}
+		std::string name = gfx_api::vk::pipelineRecipeName(createInfo.value());
+		if (name != recipe.key())
+		{
+			debug(LOG_ERROR, "Vulkan SC: pipeline recipe %s reads back as %s (export the pipelines again)", recipe.key().c_str(), name.c_str());
+			continue;
+		}
+		recipeIds.emplace(name, createdPipelines.size());
+		createdPipelines.emplace_back(createInfo.value(), std::move(name), renderPasses.size());
+	}
+
+	size_t created = 0;
+	size_t failed = 0;
+	for (const auto& pipeline : pipelines.items())
+	{
+		const std::string recipe = pipeline.value().value("recipe", "");
+		const std::string renderPassClass = pipeline.value().value("renderPassClass", "");
+		const auto recipeId = recipeIds.find(recipe);
+		const auto renderPassId = classRenderPasses.find(renderPassClass);
+		if (recipeId == recipeIds.end() || renderPassId == classRenderPasses.end())
+		{
+			debug(LOG_ERROR, "Vulkan SC: pipeline %s has no recipe or render pass class in the manifest", pipeline.key().c_str());
+			++failed;
+			continue;
+		}
+		auto& registry = createdPipelines[recipeId->second];
+		const auto& renderPass = renderPasses[renderPassId->second];
+		if (registry.renderPassPSO[renderPass.psoSlot] != nullptr)
+		{
+			continue;
+		}
+		try
+		{
+			registry.renderPassPSO[renderPass.psoSlot] = new VkPSO(dev, physDeviceProps.limits, registry.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
+			++created;
+		}
+		catch (const vk::SystemError&)
+		{
+			// VkPSO logged the pipeline's name
+			++failed;
+		}
+	}
+	debug(LOG_INFO, "Vulkan SC: created %zu pipelines at startup (%zu recipes, %zu render pass classes); %zu failed",
+		created, recipeIds.size(), classRenderPasses.size(), failed);
+	return failed == 0;
+}
+
+// Vulkan SC has no vkFreeMemory, vkDestroyCommandPool, vkDestroyDescriptorPool, vkDestroySwapchainKHR,
+// vkDestroyQueryPool, vkCreateShaderModule, or vkDestroyShaderModule: these objects live until the device
+// is destroyed, and pipelines come from the pipeline cache. The backend (and VMA) call the destroy
+// entry points through vkDynLoader, so in the Vulkan SC build they are no-ops there, rather than a
+// guard at each call site.
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepMemory(VkDevice, VkDeviceMemory, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepCommandPool(VkDevice, VkCommandPool, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepDescriptorPool(VkDevice, VkDescriptorPool, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepSwapchain(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepQueryPool(VkDevice, VkQueryPool, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR void VKAPI_CALL vulkanSCKeepShaderModule(VkDevice, VkShaderModule, const VkAllocationCallbacks*) { }
+static VKAPI_ATTR VkResult VKAPI_CALL vulkanSCNoShaderModules(VkDevice, const VkShaderModuleCreateInfo*, const VkAllocationCallbacks*, VkShaderModule*)
+{
+	debug(LOG_ERROR, "Vulkan SC has no shader modules: pipelines come from the pipeline cache");
+	return VK_ERROR_FEATURE_NOT_PRESENT;
+}
+
+void VkRoot::installVulkanSCRemovedEntryPoints()
+{
+	ASSERT(vkDynLoader.vkFreeMemory == nullptr, "The Vulkan SC loader has vkFreeMemory?");
+	vkDynLoader.vkFreeMemory = vulkanSCKeepMemory;
+	vkDynLoader.vkDestroyCommandPool = vulkanSCKeepCommandPool;
+	vkDynLoader.vkDestroyDescriptorPool = vulkanSCKeepDescriptorPool;
+	vkDynLoader.vkDestroySwapchainKHR = vulkanSCKeepSwapchain;
+	vkDynLoader.vkDestroyQueryPool = vulkanSCKeepQueryPool;
+	vkDynLoader.vkCreateShaderModule = vulkanSCNoShaderModules;
+	vkDynLoader.vkDestroyShaderModule = vulkanSCKeepShaderModule;
+}
+
+void VkRoot::logVulkanSCProperties()
+{
+	gfx_api::vk::sc::Properties properties;
+	if (!gfx_api::vk::sc::getProperties(static_cast<VkPhysicalDevice>(physicalDevice), reinterpret_cast<void*>(vkDynLoader.vkGetPhysicalDeviceProperties2), properties))
+	{
+		debug(LOG_ERROR, "Vulkan SC: could not read VkPhysicalDeviceVulkanSC10Properties");
+		return;
+	}
+	debug(LOG_INFO, "Vulkan SC properties: commandPoolResetCommandBuffer %d, recycleDescriptorSetMemory %d, recyclePipelineMemory %d, maxRenderPassSubpasses %u, maxDescriptorSetLayoutBindings %u, maxCommandPoolCommandBuffers %u, maxCommandBufferSize %" PRIu64,
+		properties.commandPoolResetCommandBuffer ? 1 : 0, properties.recycleDescriptorSetMemory ? 1 : 0, properties.recyclePipelineMemory ? 1 : 0,
+		properties.maxRenderPassSubpasses, properties.maxDescriptorSetLayoutBindings, properties.maxCommandPoolCommandBuffers, properties.maxCommandBufferSize);
+}
+
+#endif // defined(WZ_VULKANSC)
+
+bool VkRoot::canCreatePipelines() const
+{
+#if defined(WZ_VULKANSC)
+	// Without a pipeline cache, nothing is drawn
+	return static_cast<bool>(vulkanSCPipelineCache);
+#else
+	return true;
+#endif
+}
+
 bool VkRoot::createLogicalDevice()
 {
 	ASSERT(physicalDevice, "Physical device is null");
@@ -5240,6 +6035,14 @@ bool VkRoot::createLogicalDevice()
 	enabledDeviceExtensions = deviceExtensions;
 	auto supportedOptionalExtensions = findSupportedDeviceExtensions(physicalDevice, optionalDeviceExtensions, vkDynLoader);
 	enabledDeviceExtensions.insert(std::end(enabledDeviceExtensions), supportedOptionalExtensions.begin(), supportedOptionalExtensions.end());
+	// --api-coverage=heavy: the GPU timestamps on the CPU clock (logCalibratedTimestamps())
+	calibratedTimestampsEnabled = false;
+	if (uses_heavy_api_coverage)
+	{
+		const auto supportedCoverageExtensions = findSupportedDeviceExtensions(physicalDevice, { VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME }, vkDynLoader);
+		enabledDeviceExtensions.insert(std::end(enabledDeviceExtensions), supportedCoverageExtensions.begin(), supportedCoverageExtensions.end());
+		calibratedTimestampsEnabled = !supportedCoverageExtensions.empty();
+	}
 
 	// create logical device
 	std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
@@ -5275,12 +6078,18 @@ bool VkRoot::createLogicalDevice()
 	});
 	debug(LOG_3D, "Using device extensions: %s", deviceExtensionsAsString.c_str());
 
-	const auto deviceCreateInfo = vk::DeviceCreateInfo()
+	auto deviceCreateInfo = vk::DeviceCreateInfo()
 		.setEnabledExtensionCount(static_cast<uint32_t>(enabledDeviceExtensions.size()))
 		.setPpEnabledExtensionNames(enabledDeviceExtensions.data())
 		.setPEnabledFeatures(&enabledFeatures)
 		.setQueueCreateInfoCount(static_cast<uint32_t>(queueCreateInfos.size()))
 		.setPQueueCreateInfos(queueCreateInfos.data());
+#if defined(WZ_VULKANSC)
+	// The fault callback, the Vulkan SC features, and the object reservation with the pipeline cache
+	loadVulkanSCPipelineCache();
+	gfx_api::vk::sc::DeviceChainStorage vulkanSCChainStorage;
+	deviceCreateInfo.setPNext(gfx_api::vk::sc::deviceCreateInfoChain(vulkanSCChainStorage, vulkanSCDeviceReservation(), nullptr));
+#endif
 
 	try {
 		dev = physicalDevice.createDevice(deviceCreateInfo, nullptr, vkDynLoader);
@@ -5288,6 +6097,13 @@ bool VkRoot::createLogicalDevice()
 	catch (const vk::SystemError& e)
 	{
 		debug(LOG_ERROR, "vk::PhysicalDevice::createDevice: failed with error: %s", e.what());
+#if defined(WZ_VULKANSC)
+		constexpr int vkErrorInvalidPipelineCacheData = -1000298000; // VK_ERROR_INVALID_PIPELINE_CACHE_DATA (Vulkan SC)
+		if (e.code().value() == vkErrorInvalidPipelineCacheData)
+		{
+			debug(LOG_ERROR, "Vulkan SC: the pipeline cache was built for a different Vulkan SC implementation; build it with this implementation's pipeline cache compiler");
+		}
+#endif
 		// TODO: Any cleanup here?
 		return false;
 	}
@@ -5311,6 +6127,29 @@ bool VkRoot::createLogicalDevice()
 	// See: https://stackoverflow.com/a/35504844
 	vkDynLoader.init(static_cast<VkInstance>(inst), vkDynLoader.vkGetInstanceProcAddr, static_cast<VkDevice>(dev), vkDynLoader.vkGetDeviceProcAddr);
 
+#if defined(WZ_VULKANSC)
+	installVulkanSCRemovedEntryPoints();
+	logVulkanSCProperties();
+#endif
+
+	// Count the objects of each type (before createAllocator() copies the entry points into VMA).
+	gfx_api::vk::installObjectCounters(vkDynLoader);
+
+#if defined(WZ_VULKANSC)
+	if (!vulkanSCPipelineCacheData.empty())
+	{
+		const uint64_t cacheHandle = gfx_api::vk::sc::createPipelineCache(static_cast<VkDevice>(dev), reinterpret_cast<void*>(vkDynLoader.vkCreatePipelineCache),
+			vulkanSCPipelineCacheData.data(), vulkanSCPipelineCacheData.size());
+		VkPipelineCache cache = VK_NULL_HANDLE;
+		memcpy(&cache, &cacheHandle, sizeof(cache));
+		vulkanSCPipelineCache = vk::PipelineCache(cache);
+	}
+#endif
+
+	// Before any render pass, layout, or pipeline exists, so that the export records all of them.
+	pipelineJsonExport = gfx_api::vk::PipelineJsonExport::createFromEnvironment();
+	sharedPipelineObjects.setPipelineJsonExport(pipelineJsonExport.get());
+
 	return true;
 }
 
@@ -5329,6 +6168,10 @@ bool VkRoot::createAllocator()
 	// so it must be no higher than `VkApplicationInfo::apiVersion` passed to `vkCreateInstance`
 	// and no higher than `VkPhysicalDeviceProperties::apiVersion` found on the physical device used."
 	allocatorInfo.vulkanApiVersion = std::min(instanceCreateInfo.pApplicationInfo->apiVersion, physDeviceProps.apiVersion);
+#if defined(WZ_VULKANSC)
+	// VMA knows only Vulkan versions; Vulkan SC 1.0 has the core API of Vulkan 1.2
+	allocatorInfo.vulkanApiVersion = vulkanSCCoreVulkanVersion;
+#endif
 	debug(LOG_3D, "Using VMA allocator vulkanApiVersion: %s", VkhInfo::vulkan_apiversion_to_string(allocatorInfo.vulkanApiVersion).c_str());
 
 	bool enabled_VK_KHR_get_memory_requirements2 = std::find_if(enabledDeviceExtensions.begin(), enabledDeviceExtensions.end(),
@@ -5406,8 +6249,109 @@ bool VkRoot::createAllocator()
 	{
 		debug(LOG_ERROR, "vmaCreateAllocator failed with error: %s", to_string(static_cast<vk::Result>(result)).c_str());
 	}
+#if defined(WZ_VULKANSC)
+	if (result == VK_SUCCESS && !createVulkanSCMemoryPools())
+	{
+		return false;
+	}
+#endif
 	return result == VK_SUCCESS;
 }
+
+#if defined(WZ_VULKANSC)
+
+bool VkRoot::createVulkanSCMemoryPools()
+{
+	for (size_t i = 0; i < vulkanSCMemoryPools.size(); ++i)
+	{
+		VulkanSCMemoryPool& pool = vulkanSCMemoryPools[i];
+		VmaAllocationCreateInfo allocInfo = {};
+		allocInfo.usage = pool.usage;
+		VkResult findResult = VK_SUCCESS;
+		if (i == vulkanSCImagePool)
+		{
+			VkImageCreateInfo imageInfo = {};
+			imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+			imageInfo.imageType = VK_IMAGE_TYPE_2D;
+			imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+			imageInfo.extent = {256, 256, 1};
+			imageInfo.mipLevels = 1;
+			imageInfo.arrayLayers = 1;
+			imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+			imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+			imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+			findResult = vmaFindMemoryTypeIndexForImageInfo(allocator, &imageInfo, &allocInfo, &pool.memoryTypeIndex);
+		}
+		else
+		{
+			VkBufferCreateInfo bufferInfo = {};
+			bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+			bufferInfo.size = 64 * 1024;
+			bufferInfo.usage = (i == vulkanSCStagingPool) ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+				: (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+			findResult = vmaFindMemoryTypeIndexForBufferInfo(allocator, &bufferInfo, &allocInfo, &pool.memoryTypeIndex);
+		}
+		if (findResult != VK_SUCCESS)
+		{
+			debug(LOG_ERROR, "Vulkan SC: no memory type for the %s pool: %s", pool.name, to_string(static_cast<vk::Result>(findResult)).c_str());
+			return false;
+		}
+
+		VmaPoolCreateInfo poolInfo = {};
+		poolInfo.memoryTypeIndex = pool.memoryTypeIndex;
+		poolInfo.blockSize = pool.blockSize;
+		poolInfo.minBlockCount = pool.blockCount;
+		poolInfo.maxBlockCount = pool.blockCount;
+		const VkResult poolResult = vmaCreatePool(allocator, &poolInfo, &pool.pool);
+		if (poolResult != VK_SUCCESS)
+		{
+			debug(LOG_ERROR, "Vulkan SC: could not make the %s pool (%zu blocks of %" PRIu64 " bytes): %s", pool.name, pool.blockCount,
+				static_cast<uint64_t>(pool.blockSize), to_string(static_cast<vk::Result>(poolResult)).c_str());
+			return false;
+		}
+		pool.peakUsedBytes = 0;
+		debug(LOG_3D, "Vulkan SC memory pool %s: memory type %u, %zu blocks of %" PRIu64 " bytes", pool.name, pool.memoryTypeIndex, pool.blockCount, static_cast<uint64_t>(pool.blockSize));
+	}
+	return true;
+}
+
+void VkRoot::updateVulkanSCMemoryPoolPeaks()
+{
+	for (auto& pool : vulkanSCMemoryPools)
+	{
+		if (pool.pool != VK_NULL_HANDLE)
+		{
+			VmaStatistics statistics = {};
+			vmaGetPoolStatistics(allocator, pool.pool, &statistics);
+			pool.peakUsedBytes = std::max(pool.peakUsedBytes, statistics.allocationBytes);
+		}
+	}
+}
+
+void VkRoot::reportVulkanSCMemoryPools(code_part part)
+{
+	updateVulkanSCMemoryPoolPeaks();
+	debug(part, "Vulkan SC memory pools: peak used of the pool size");
+	for (const auto& pool : vulkanSCMemoryPools)
+	{
+		debug(part, "  %-26s memory type %u: %" PRIu64 " of %" PRIu64 " bytes", pool.name, pool.memoryTypeIndex,
+			static_cast<uint64_t>(pool.peakUsedBytes), static_cast<uint64_t>(pool.blockSize * pool.blockCount));
+	}
+}
+
+void VkRoot::destroyVulkanSCMemoryPools()
+{
+	for (auto& pool : vulkanSCMemoryPools)
+	{
+		if (pool.pool != VK_NULL_HANDLE)
+		{
+			vmaDestroyPool(allocator, pool.pool);
+			pool.pool = VK_NULL_HANDLE;
+		}
+	}
+}
+
+#endif // defined(WZ_VULKANSC)
 
 void VkRoot::getQueues()
 {
@@ -5419,6 +6363,10 @@ void VkRoot::getQueues()
 
 void VkRoot::draw(const std::size_t& offset, const std::size_t& count, const gfx_api::primitive_type&)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, renderGraphExecuting() && hasActivePass,
 		"draw() called outside render graph record callback");
 
@@ -5429,6 +6377,10 @@ void VkRoot::draw(const std::size_t& offset, const std::size_t& count, const gfx
 
 void VkRoot::draw_instanced(const std::size_t& offset, const std::size_t &count, const gfx_api::primitive_type &primitive, std::size_t instance_count)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT(offset <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "offset (%zu) exceeds uint32_t max", offset);
 	ASSERT(count <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "count (%zu) exceeds uint32_t max", count);
 	buffering_mechanism::get_current_resources().currentDrawCmdBuffer()->draw(static_cast<uint32_t>(count), static_cast<uint32_t>(instance_count), static_cast<uint32_t>(offset), 0, vkDynLoader);
@@ -5436,6 +6388,10 @@ void VkRoot::draw_instanced(const std::size_t& offset, const std::size_t &count,
 
 void VkRoot::draw_elements(const std::size_t& offset, const std::size_t& count, const gfx_api::primitive_type&, const gfx_api::index_type&)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, renderGraphExecuting() && hasActivePass,
 		"draw_elements() called outside render graph record callback");
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
@@ -5446,6 +6402,10 @@ void VkRoot::draw_elements(const std::size_t& offset, const std::size_t& count, 
 
 void VkRoot::draw_elements_instanced(const std::size_t& offset, const std::size_t &count, const gfx_api::primitive_type &primitive, const gfx_api::index_type& index, std::size_t instance_count)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(offset <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "offset (%zu) exceeds uint32_t max", offset);
 	ASSERT(count <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "count (%zu) exceeds uint32_t max", count);
@@ -5454,6 +6414,10 @@ void VkRoot::draw_elements_instanced(const std::size_t& offset, const std::size_
 
 void VkRoot::bind_vertex_buffers(const std::size_t& first, const std::vector<std::tuple<gfx_api::buffer*, std::size_t>>& vertex_buffers_offset)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	std::vector<vk::Buffer> buffers;
 	std::vector<VkDeviceSize> offsets;
@@ -5483,6 +6447,10 @@ void VkRoot::disable_all_vertex_buffers()
 
 void VkRoot::bind_streamed_vertex_buffers(const void* data, const std::size_t size)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(size > 0, "bind_streamed_vertex_buffers called with size 0");
 	ASSERT(size <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "size (%zu) exceeds uint32_t max", size);
@@ -5598,6 +6566,9 @@ void VkRoot::setupSwapchainImages()
 		debug(LOG_FATAL, "vk::Queue::waitIdle: unhandled error: %s", e.what());
 		throw;
 	}
+
+	// The frame slot's pool outlives this swapchain, so give the buffer back.
+	dev.freeCommandBuffers(buffering_mechanism::perFrameResources[0]->pool, buffers, vkDynLoader);
 }
 
 gfx_api::pixel_format gfx_api::vkFormatToPixelFormat(::vk::Format format)
@@ -5758,6 +6729,10 @@ vk::IndexType VkRoot::to_vk(const gfx_api::index_type& index)
 
 void VkRoot::bind_index_buffer(gfx_api::buffer& index_buffer, const gfx_api::index_type& index)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	auto& casted_buf = static_cast<VkBuf&>(index_buffer);
 	ASSERT(casted_buf.usage == gfx_api::buffer::usage::index_buffer, "Passed gfx_api::buffer is not an index buffer");
@@ -5771,6 +6746,10 @@ void VkRoot::unbind_index_buffer(gfx_api::buffer&)
 
 void VkRoot::bind_textures(const std::vector<gfx_api::texture_input>& attribute_descriptions, const std::vector<gfx_api::abstract_texture*>& textures)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(textures.size() <= attribute_descriptions.size(), "Received more textures than expected");
 	ASSERT(textures.size() <= std::numeric_limits<uint32_t>::max(), "Too many textures: %zu", textures.size());
@@ -5864,6 +6843,7 @@ void VkRoot::bind_textures(const std::vector<gfx_api::texture_input>& attribute_
 		}
 
 		image_descriptor.emplace_back(vk::DescriptorImageInfo()
+			.setSampler(currentPSO->samplers.at(i))
 			.setImageView(imageView)
 			.setImageLayout(imageLayout));
 		i++;
@@ -5922,6 +6902,10 @@ void VkRoot::set_constants(const void* buffer, const std::size_t& size)
 
 void VkRoot::set_uniforms_set(const size_t& uniform_set, const void* buffer, size_t size)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT(size <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "size (%zu) exceeds uint32_t max", size);
 	const auto stagingMemory = buffering_mechanism::get_current_resources().uniformBufferAllocator.alloc(static_cast<uint32_t>(size), physDeviceProps.limits.minUniformBufferOffsetAlignment);
@@ -6013,6 +6997,10 @@ gfx_api::frame_uniform_allocation VkRoot::upload_frame_uniform_raw(const void* d
 
 void VkRoot::set_frame_uniform_at(size_t slot, const gfx_api::frame_uniform_allocation& allocation, std::type_index type)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	ASSERT_OR_RETURN(, slot < currentPSO->cbuffer_set_layout.size(), "Uniform set %zu is out of range (have %zu)", slot, currentPSO->cbuffer_set_layout.size());
 	ASSERT(slot >= currentPSO->uniformBlockTypes.size() || currentPSO->uniformBlockTypes[slot] == type,
@@ -6042,6 +7030,10 @@ void VkRoot::set_frame_uniform_at(size_t slot, const gfx_api::frame_uniform_allo
 
 void VkRoot::set_uniforms(const size_t& first, const std::vector<std::tuple<const void*, size_t>>& uniform_blocks)
 {
+	if (skipDrawsWithoutPipeline)
+	{
+		return;
+	}
 	ASSERT_OR_RETURN(, currentPSO != nullptr, "currentPSO == NULL");
 	for (size_t i = 0, e = uniform_blocks.size(); i < e && (first + i) < currentPSO->cbuffer_set_layout.size(); ++i)
 	{
@@ -6062,13 +7054,38 @@ void VkRoot::bind_pipeline(gfx_api::pipeline_state_object* pso, bool /*notexture
 	VkPSOId* newPSOId = static_cast<VkPSOId*>(pso);
 	// lookup PSO
 	auto& pipelineInfo = createdPipelines[newPSOId->psoID];
-	VkPSO* newPSO = pipelineInfo.renderPassPSO[currentRenderPassId];
+	auto& renderPass = renderPasses[currentRenderPassId];
+	VkPSO* newPSO = pipelineInfo.renderPassPSO[renderPass.psoSlot];
+	const auto pipelineKey = std::make_pair(newPSOId->psoID, renderPass.psoSlot);
+#if defined(WZ_VULKANSC)
+	// Every pipeline was created at startup: one that wasn't is not in the pipeline manifest
+	if (!newPSO && canCreatePipelines() && unavailablePipelines.insert(pipelineKey).second)
+	{
+		debug(LOG_ERROR, "Vulkan SC: pipeline %s for render pass class %s was not created at startup: it is not in the pipeline manifest; its draws are skipped (tools/vulkansc/export_pipelines.sh)",
+			pipelineInfo.name.c_str(), renderPass.className.c_str());
+	}
+	if (!newPSO)
+#else
+	if (!newPSO && (!canCreatePipelines() || unavailablePipelines.count(pipelineKey) != 0))
+#endif
+	{
+		skipDrawsWithoutPipeline = true;
+		currentPSO = nullptr;
+		return;
+	}
+	skipDrawsWithoutPipeline = false;
 	if (!newPSO)
 	{
-		// Must build this pipeline for a different render pass
-		auto& renderPass = renderPasses[currentRenderPassId];
-		newPSO = new VkPSO(dev, physDeviceProps.limits, pipelineInfo.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
-		pipelineInfo.renderPassPSO[currentRenderPassId] = newPSO;
+		// Must build this pipeline for a render pass that is not compatible with any it was built for
+		debug(LOG_3D, "Built pipeline %s for render pass class %s", pipelineInfo.name.c_str(), renderPass.className.c_str());
+		try {
+			newPSO = new VkPSO(dev, physDeviceProps.limits, pipelineInfo.createInfo, renderPass.rp, renderPass.rp_compat_info, renderPass.msaaSamples, vkDynLoader, *this);
+		}
+		catch (const vk::SystemError&)
+		{
+			throw;
+		}
+		pipelineInfo.renderPassPSO[renderPass.psoSlot] = newPSO;
 	}
 	if (currentPSO != newPSO)
 	{
@@ -6599,6 +7616,7 @@ void VkRoot::destroyDynamicRenderPasses()
 	}
 	renderPasses.clear();
 	destroyRenderPassIndexedPSOs(0);
+	unavailablePipelines.clear();
 	_renderPassLayoutCache.clear();
 }
 
@@ -6690,6 +7708,12 @@ gfx_api::vk::TransferRecorder VkRoot::transferRecorder() const
 
 void perFrameResources_t::flushMappedAllocators()
 {
+	if (uses_heavy_api_coverage)
+	{
+		uniformBufferAllocator.flushAutomappedMemoryRanges(*pVkDynLoader);
+		streamedVertexBufferAllocator.flushAutomappedMemoryRanges(*pVkDynLoader);
+		lightDataBufferAllocator.flushAutomappedMemoryRanges(*pVkDynLoader);
+	}
 	uniformBufferAllocator.flushAutomappedMemory();
 	uniformBufferAllocator.unmapAutomappedMemory();
 	streamedVertexBufferAllocator.flushAutomappedMemory();
@@ -6716,7 +7740,7 @@ void perFrameResources_t::ensureTransferRecordingBegun(const WZ_vk::DispatchLoad
 			handleUnrecoverableError(vk::Result::eTimeout);
 		}
 		dev.resetFences(fences, vkDynLoader);
-		cmdCopy.reset(vk::CommandBufferResetFlagBits::eReleaseResources, vkDynLoader);
+		dev.resetCommandPool(copyPool, vk::CommandPoolResetFlags(), vkDynLoader);
 		copyCmdBufferSubmittedSincePoolReset = false;
 	}
 
@@ -6831,7 +7855,18 @@ void VkRoot::sealAndSubmitTransferGraphics(ScreenFramePipelineState& state)
 				? &buffering_mechanism::get_swapchain_resources(currentSwapchainIndex).renderFinishedSemaphore
 				: nullptr,
 		};
+		// --api-coverage=heavy: a queue label around the frame's submit
+		const bool queueLabels = uses_heavy_api_coverage && debugUtilsExtEnabled;
+		if (queueLabels)
+		{
+			const std::string labelName = "Frame " + std::to_string(frameNum);
+			graphicsQueue.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT().setPLabelName(labelName.c_str()), vkDynLoader);
+		}
 		frameResources.submitCommandBuffers(submitParams, state);
+		if (queueLabels)
+		{
+			graphicsQueue.endDebugUtilsLabelEXT(vkDynLoader);
+		}
 
 		if (state.submitDrawBuffer)
 		{
@@ -6926,8 +7961,41 @@ void VkRoot::beginScreenFrame()
 	}
 }
 
+// Debug aids that exercise the swapchain recreate paths without a window resize:
+//   WZ_VULKAN_DEBUG_FORCE_SWAPCHAIN_RECREATE=<N>  recreate the swapchain every N screen frames
+//   WZ_VULKAN_DEBUG_FORCE_SURFACE_LOST=<N>        recreate the surface and swapchain every N screen frames
+static uint64_t debugFrameIntervalFromEnv(const char* name)
+{
+	const char* value = getenv(name);
+	if (value == nullptr)
+	{
+		return 0;
+	}
+	const unsigned long long interval = strtoull(value, nullptr, 10);
+	if (interval > 0)
+	{
+		debug(LOG_INFO, "%s=%llu", name, interval);
+	}
+	return static_cast<uint64_t>(interval);
+}
+
 void VkRoot::reconcileSwapchainAtFrameOpen()
 {
+	static const uint64_t forceRecreateInterval = debugFrameIntervalFromEnv("WZ_VULKAN_DEBUG_FORCE_SWAPCHAIN_RECREATE");
+	static const uint64_t forceSurfaceLostInterval = debugFrameIntervalFromEnv("WZ_VULKAN_DEBUG_FORCE_SURFACE_LOST");
+	static uint64_t screenFrameCount = 0;
+	++screenFrameCount;
+	if (forceSurfaceLostInterval > 0 && (screenFrameCount % forceSurfaceLostInterval) == 0)
+	{
+		debug(LOG_3D, "Forcing surface lost recovery at screen frame %" PRIu64, screenFrameCount);
+		_screenFrameCoordinator.requestSurfaceLostRecovery();
+	}
+	else if (forceRecreateInterval > 0 && (screenFrameCount % forceRecreateInterval) == 0)
+	{
+		debug(LOG_3D, "Forcing swapchain recreate at screen frame %" PRIu64, screenFrameCount);
+		_screenFrameCoordinator.requestSwapchainRecreate();
+	}
+
 	_screenFrameCoordinator.reconcileSwapchainAtFrameOpen();
 }
 
@@ -6943,6 +8011,39 @@ bool VkRoot::canRecordSwapchainDraws() const
 
 void VkRoot::finishScreenFrame()
 {
+#if defined(WZ_VULKANSC)
+	updateVulkanSCMemoryPoolPeaks();
+#endif
+	if (calibratedTimestampsEnabled && (frameNum % 600) == 0)
+	{
+		logCalibratedTimestamps();
+	}
+	// Debug aid: WZ_VULKAN_DEBUG_SCREENSHOT=<frame>:<file.png> saves that frame as a PNG
+	// (the file name is relative to the write directory, --configdir).
+	static const std::pair<size_t, std::string> debugScreenshot = []() -> std::pair<size_t, std::string> {
+		const char* value = getenv("WZ_VULKAN_DEBUG_SCREENSHOT");
+		const char* separator = (value) ? strchr(value, ':') : nullptr;
+		if (separator == nullptr)
+		{
+			return {0, std::string()};
+		}
+		const size_t frame = static_cast<size_t>(strtoul(value, nullptr, 10));
+		debug(LOG_INFO, "Vulkan debug screenshot: frame %zu -> %s", frame, separator + 1);
+		return {frame, std::string(separator + 1)};
+	}();
+	if (!debugScreenshot.second.empty() && debugScreenshot.first == frameNum)
+	{
+		const std::string path = debugScreenshot.second;
+		const bool requested = getScreenshot([path](std::unique_ptr<iV_Image> image) {
+			const bool saved = image && iV_saveImage_PNG(path.c_str(), image.get()).noError();
+			debug(LOG_INFO, "Vulkan debug screenshot %s: %s", saved ? "saved" : "FAILED", path.c_str());
+		});
+		if (!requested)
+		{
+			debug(LOG_INFO, "Vulkan debug screenshot: no capture at frame %zu", frameNum);
+		}
+	}
+
 	_screenFrameCoordinator.finishFrame();
 }
 
@@ -7244,6 +8345,11 @@ bool VkRoot::setGpuFrameTimingEnabled(bool enabled)
 	{
 		return true;
 	}
+	if (!enabled && uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy keeps GPU frame timing on
+		return true;
+	}
 	if (enabled && !gpuTimingQueryPool)
 	{
 		try {
@@ -7351,6 +8457,143 @@ void VkRoot::writeGpuTimingEndIfOpen(vk::CommandBuffer cmdBuffer)
 	slot.inFlight = true;
 	gpuTimingWriteIdx = (gpuTimingWriteIdx + 1) % GPU_TIMING_SLOTS;
 	gpuTimingFrameOpen = false;
+}
+
+bool VkRoot::instanceExtensionEnabled(const char* extensionName) const
+{
+	return std::any_of(instanceExtensions.begin(), instanceExtensions.end(), [extensionName](const char* name) {
+		return strcmp(name, extensionName) == 0;
+	});
+}
+
+// --api-coverage=heavy: query the device, the surface, and the display with more of the API, for capture tools.
+// The queries run before the debug() lines, because debug() skips its arguments when the log part is off.
+void VkRoot::logApiCoverageInfo()
+{
+	const vk::ImageUsageFlags textureUsage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+	try {
+		const auto textureLimits = physicalDevice.getImageFormatProperties(vk::Format::eR8G8B8A8Unorm, vk::ImageType::e2D,
+			vk::ImageTiling::eOptimal, textureUsage, vk::ImageCreateFlags(), vkDynLoader);
+		debug(LOG_3D, "API coverage: RGBA8 textures up to %" PRIu32 "x%" PRIu32 ", %" PRIu32 " mip levels",
+			textureLimits.maxExtent.width, textureLimits.maxExtent.height, textureLimits.maxMipLevels);
+
+		if (canUseVulkanInstanceAPI(VK_API_VERSION_1_1))
+		{
+			const auto deviceGroups = inst.enumeratePhysicalDeviceGroups(vkDynLoader);
+			debug(LOG_3D, "API coverage: %zu physical device groups", deviceGroups.size());
+		}
+
+		if (canUseVulkanDeviceAPI(VK_API_VERSION_1_1))
+		{
+			const auto queueFamilies = physicalDevice.getQueueFamilyProperties2(vkDynLoader);
+			const auto memoryProperties = physicalDevice.getMemoryProperties2(vkDynLoader);
+			const auto depthFormatProperties = physicalDevice.getFormatProperties2(depthBufferFormat, vkDynLoader);
+			const auto textureLimits2 = physicalDevice.getImageFormatProperties2(
+				vk::PhysicalDeviceImageFormatInfo2()
+					.setFormat(vk::Format::eR8G8B8A8Unorm)
+					.setType(vk::ImageType::e2D)
+					.setTiling(vk::ImageTiling::eOptimal)
+					.setUsage(textureUsage),
+				vkDynLoader);
+			const vk::Queue graphicsQueue2 = dev.getQueue2(
+				vk::DeviceQueueInfo2()
+					.setQueueFamilyIndex(queueFamilyIndices.graphicsFamily.value())
+					.setQueueIndex(0),
+				vkDynLoader);
+			const auto presentRectangles = physicalDevice.getPresentRectanglesKHR(surface, vkDynLoader);
+			debug(LOG_3D, "API coverage: %zu queue families, %" PRIu32 " memory heaps, depth format features 0x%x, RGBA8 texture array layers %" PRIu32 ", graphics queue %s, %zu present rectangles",
+				queueFamilies.size(), memoryProperties.memoryProperties.memoryHeapCount,
+				static_cast<uint32_t>(depthFormatProperties.formatProperties.optimalTilingFeatures),
+				textureLimits2.imageFormatProperties.maxArrayLayers,
+				(graphicsQueue2 == graphicsQueue) ? "matches" : "DIFFERS", presentRectangles.size());
+		}
+	}
+	catch (const vk::SystemError& e)
+	{
+		debug(LOG_3D, "API coverage: device queries failed: %s", e.what());
+	}
+
+	try {
+		if (instanceExtensionEnabled(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME))
+		{
+			const auto surfaceInfo = vk::PhysicalDeviceSurfaceInfo2KHR().setSurface(surface);
+			const auto surfaceCapabilities2 = physicalDevice.getSurfaceCapabilities2KHR(surfaceInfo, vkDynLoader);
+			const auto surfaceFormats2 = physicalDevice.getSurfaceFormats2KHR(surfaceInfo, vkDynLoader);
+			debug(LOG_3D, "API coverage: surface up to %" PRIu32 " images, %zu formats",
+				surfaceCapabilities2.surfaceCapabilities.maxImageCount, surfaceFormats2.size());
+		}
+		if (instanceExtensionEnabled(VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME))
+		{
+			const auto surfaceCounters = physicalDevice.getSurfaceCapabilities2EXT(surface, vkDynLoader);
+			debug(LOG_3D, "API coverage: surface counters 0x%x", static_cast<uint32_t>(surfaceCounters.supportedSurfaceCounters));
+		}
+	}
+	catch (const vk::SystemError& e)
+	{
+		debug(LOG_3D, "API coverage: surface queries failed: %s", e.what());
+	}
+
+	if (calibratedTimestampsEnabled)
+	{
+		// The GPU time domain and a CPU clock, to put the GPU frame timing on the CPU timeline
+		calibratedTimestampsEnabled = false;
+		try {
+			const auto timeDomains = physicalDevice.getCalibrateableTimeDomainsKHR(vkDynLoader);
+			const bool hasDeviceDomain = std::find(timeDomains.begin(), timeDomains.end(), vk::TimeDomainKHR::eDevice) != timeDomains.end();
+			for (const auto hostDomain : { vk::TimeDomainKHR::eClockMonotonic, vk::TimeDomainKHR::eQueryPerformanceCounter })
+			{
+				if (hasDeviceDomain && std::find(timeDomains.begin(), timeDomains.end(), hostDomain) != timeDomains.end())
+				{
+					calibrationHostTimeDomain = hostDomain;
+					calibratedTimestampsEnabled = true;
+					break;
+				}
+			}
+			debug(LOG_3D, "API coverage: %zu calibrateable time domains", timeDomains.size());
+		}
+		catch (const vk::SystemError& e)
+		{
+			debug(LOG_3D, "API coverage: vkGetPhysicalDeviceCalibrateableTimeDomainsKHR failed: %s", e.what());
+		}
+		if (calibratedTimestampsEnabled)
+		{
+			logCalibratedTimestamps();
+		}
+	}
+
+	if (debugUtilsExtEnabled)
+	{
+		// A tag on the device, and a message through the debug messenger
+		static const char coverageTag[] = "api-coverage=heavy";
+		dev.setDebugUtilsObjectTagEXT(
+			vk::DebugUtilsObjectTagInfoEXT()
+				.setObjectType(vk::ObjectType::eDevice)
+				.setObjectHandle(reinterpret_cast<uint64_t>(static_cast<VkDevice>(dev)))
+				.setTagName(1)
+				.setTagSize(sizeof(coverageTag))
+				.setPTag(coverageTag),
+			vkDynLoader);
+		inst.submitDebugUtilsMessageEXT(vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo, vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral,
+			vk::DebugUtilsMessengerCallbackDataEXT().setPMessage("Warzone 2100: --api-coverage=heavy"), vkDynLoader);
+	}
+}
+
+void VkRoot::logCalibratedTimestamps()
+{
+	const auto timestampInfos = std::array<vk::CalibratedTimestampInfoKHR, 2> {
+		vk::CalibratedTimestampInfoKHR().setTimeDomain(vk::TimeDomainKHR::eDevice),
+		vk::CalibratedTimestampInfoKHR().setTimeDomain(calibrationHostTimeDomain)
+	};
+	try {
+		const auto timestamps = dev.getCalibratedTimestampsKHR(timestampInfos, vkDynLoader);
+		debug(LOG_3D, "API coverage: frame %zu, GPU timestamp %" PRIu64 ", CPU clock %" PRIu64 ", max deviation %" PRIu64 " ns",
+			frameNum, timestamps.first[0], timestamps.first[1], timestamps.second);
+	}
+	catch (const vk::SystemError& e)
+	{
+		debug(LOG_3D, "API coverage: vkGetCalibratedTimestampsKHR failed: %s", e.what());
+		calibratedTimestampsEnabled = false;
+	}
 }
 
 bool VkRoot::setSceneUpscalingMode(gfx_api::context::scene_upscaling_mode mode)
@@ -7639,10 +8882,13 @@ bool VkRoot::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)> callb
 		return false;
 	}
 
+	VmaAllocationCreateInfo stagingAllocInfo = {};
+	stagingAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	selectMemoryPool(stagingAllocInfo, false);
 	return _screenshotReadback.requestCapture(
 		std::move(callback),
-		dev,
-		memprops,
+		allocator,
+		stagingAllocInfo,
 		physDeviceProps.limits.bufferImageGranularity,
 		swapchainSize,
 		surfaceFormat.format,
@@ -7689,6 +8935,16 @@ bool VkRoot::setShadowConstants(gfx_api::lighting_constants newValues)
 		return true;
 	}
 
+#if defined(WZ_VULKANSC)
+	// The pipelines were created at startup with the manifest's values (the graphics profile's): nothing is rebuilt
+	if (!(pipelineSpecializationValues(newValues) == pipelineSpecializationValues(shadowConstants)))
+	{
+		debug(LOG_ERROR, "Vulkan SC: these shadow and point light settings need other pipelines than the graphics profile's (shadow mode %" PRIu32 ", filter size %" PRIu32 ", cascades %" PRIu32 ", per pixel point lights %d); the profile's pipelines are kept",
+			newValues.shadowMode, newValues.shadowFilterSize, newValues.shadowCascadesCount, newValues.isPointLightPerPixelEnabled ? 1 : 0);
+	}
+	shadowConstants = newValues;
+	return true;
+#endif
 	shadowConstants = newValues;
 
 	// Must rebuild any shaders that used these values
@@ -7717,8 +8973,53 @@ bool VkRoot::setShadowConstants(gfx_api::lighting_constants newValues)
 	return true;
 }
 
+// The per-frame peaks of the frame slots: what fixed-size per-frame resources need (Vulkan SC cannot grow them).
+void VkRoot::reportFrameResourcePeaks(code_part part) const
+{
+	uint64_t staging = 0, streamedVertex = 0, uniform = 0, lightData = 0;
+	size_t imageSamplerSets = 0, imageSamplerDescriptors = 0, uniformSets = 0, uniformDescriptors = 0;
+	size_t imageSamplerPools = 0, uniformPools = 0;
+	for (const auto& frameResources : buffering_mechanism::perFrameResources)
+	{
+		staging = std::max(staging, frameResources->stagingBufferAllocator.peakUsedPerFrame());
+		streamedVertex = std::max(streamedVertex, frameResources->streamedVertexBufferAllocator.peakUsedPerFrame());
+		uniform = std::max(uniform, frameResources->uniformBufferAllocator.peakUsedPerFrame());
+		lightData = std::max(lightData, frameResources->lightDataBufferAllocator.peakUsedPerFrame());
+		const auto& imageSampler = frameResources->combinedImageSamplerDescriptorPools;
+		const auto& uniformDynamic = frameResources->uniformDynamicDescriptorPools;
+		imageSamplerSets = std::max(imageSamplerSets, imageSampler.peakSetsPerFrame);
+		imageSamplerDescriptors = std::max(imageSamplerDescriptors, imageSampler.peakDescriptorsPerFrame);
+		imageSamplerPools = std::max(imageSamplerPools, imageSampler.pools.size());
+		uniformSets = std::max(uniformSets, uniformDynamic.peakSetsPerFrame);
+		uniformDescriptors = std::max(uniformDescriptors, uniformDynamic.peakDescriptorsPerFrame);
+		uniformPools = std::max(uniformPools, uniformDynamic.pools.size());
+	}
+	debug(part, "Per-frame peaks of %zu frame slots:", buffering_mechanism::perFrameResources.size());
+	debug(part, "  ring bytes: staging %" PRIu64 ", streamed vertex %" PRIu64 ", uniform %" PRIu64 ", light data %" PRIu64,
+		staging, streamedVertex, uniform, lightData);
+	debug(part, "  combined image sampler: %zu sets, %zu descriptors, %zu pools; uniform buffer dynamic: %zu sets, %zu descriptors, %zu pools",
+		imageSamplerSets, imageSamplerDescriptors, imageSamplerPools, uniformSets, uniformDescriptors, uniformPools);
+#if defined(WZ_VULKANSC)
+	uint64_t drawCommandBuffer = 0, copyCommandBuffer = 0;
+	for (const auto& frameResources : buffering_mechanism::perFrameResources)
+	{
+		drawCommandBuffer = std::max(drawCommandBuffer, frameResources->peakDrawCommandBufferBytes);
+		copyCommandBuffer = std::max(copyCommandBuffer, frameResources->peakCopyCommandBufferBytes);
+	}
+	debug(part, "  command buffer memory: draw %" PRIu64 " bytes, copy %" PRIu64 " bytes (reserved %" PRIu64 " and %" PRIu64 ")",
+		drawCommandBuffer, copyCommandBuffer, vulkanSCDrawCommandBufferReservedSize, vulkanSCCopyCommandBufferReservedSize);
+#endif
+}
+
 bool VkRoot::debugRecompileAllPipelines()
 {
+#if defined(WZ_VULKANSC)
+	// Vulkan SC has no shaders to read again, and creates no pipeline after startup
+	debug(LOG_INFO, "Vulkan SC: pipelines cannot be recompiled");
+	return false;
+#endif
+	// Read the shaders again: the new pipelines get new shader modules.
+	sharedPipelineObjects.releaseShaderModules(dev, vkDynLoader);
 	for (auto& pipelineInfo : createdPipelines)
 	{
 		const size_t numRenderPasses = std::min(pipelineInfo.renderPassPSO.size(), renderPasses.size());

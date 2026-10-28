@@ -248,13 +248,18 @@ if(GLSLC)
 	message(STATUS "Found glslc: ${GLSLC}")
 	set(_output_dir "${CMAKE_CURRENT_BINARY_DIR}/base/shaders/vk")
 	file(MAKE_DIRECTORY "${_output_dir}")
+	# Vulkan SC 1.0 is based on Vulkan 1.2
+	set(_glslc_target_env)
+	if(WZ_ENABLE_BACKEND_VULKANSC)
+		set(_glslc_target_env "--target-env=vulkan1.2")
+	endif()
 	foreach(SHADER ${VK_SHADERS})
 		get_filename_component(SHADER_FILE_PATH ${SHADER} DIRECTORY)
 		get_filename_component(SHADER_FILE ${SHADER} NAME)
 		set(_output_name "${SHADER_FILE}.spv")
 		add_custom_command(OUTPUT "${_output_dir}/${_output_name}"
 			COMMAND "${GLSLC}"
-			ARGS "-c" "-I" "${_vk_generated_dir}" "${SHADER}" "-o" "${_output_dir}/${_output_name}"
+			ARGS "-c" ${_glslc_target_env} "-I" "${_vk_generated_dir}" "${SHADER}" "-o" "${_output_dir}/${_output_name}"
 			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/base/shaders/vk"
 			DEPENDS "${SHADER}" "${_vk_generated_constants}" ${VK_SHADER_INCLUDES}
 			VERBATIM
@@ -323,6 +328,57 @@ if(WZ_ENABLE_BACKEND_WEBGPU AND WZ_DAWN_FOUND)
 	message(STATUS "WebGPU shaders: ${_wgsl_translated_count} translated, ${_wgsl_handwritten_count} hand-written")
 	add_custom_target(wgsl_compilation DEPENDS ${WGSL_SHADER_LIST})
 	set_property(TARGET wgsl_compilation PROPERTY FOLDER "data")
+endif()
+
+#########################################
+# Vulkan SC pipeline cache
+#
+# The pipeline cache compiler (PCC) builds the cache from the pipeline JSON that the desktop Vulkan build
+# exported (tools/vulkansc/export_pipelines.sh, into data/vulkansc/<profile>) and the SPIR-V of this build.
+# The cache goes into base.wz as shaders/vksc/wz2100.vksc.bin, with the manifest (wz2100_pipelines.json),
+# from which the Vulkan SC build creates every pipeline at startup. A cache is specific to the Vulkan SC
+# implementation whose PCC built it. The defaults are pcconvk's options (VulkanSC-Emulation); for
+# nvidia-pcc, use single-dash options and an empty prefix option, as vulkansc-samples documents.
+if(WZ_ENABLE_BACKEND_VULKANSC AND TARGET glsl_compilation)
+	set(WZ_VULKANSC_PROFILE "high" CACHE STRING "Vulkan SC graphics profile: the pipeline JSON in data/vulkansc/<profile>")
+	find_program(WZ_VULKANSC_PCC NAMES pcconvk HINTS "$ENV{VULKANSC_SDK}/bin" DOC "The Vulkan SC pipeline cache compiler")
+	set(WZ_VULKANSC_PCC_PATH_ARG "--path" CACHE STRING "PCC option: the directory with the JSON and SPIR-V")
+	set(WZ_VULKANSC_PCC_OUT_ARG "--out" CACHE STRING "PCC option: the output file")
+	set(WZ_VULKANSC_PCC_PREFIX_ARG "--prefix" CACHE STRING "PCC option: the JSON file name prefix (empty: no prefix option)")
+	set(WZ_VULKANSC_PCC_EXTRA_FLAGS "" CACHE STRING "More PCC options")
+
+	set(_vksc_json_dir "${CMAKE_CURRENT_SOURCE_DIR}/vulkansc/${WZ_VULKANSC_PROFILE}")
+	file(GLOB _vksc_json_files CONFIGURE_DEPENDS "${_vksc_json_dir}/wz2100.pc.*.json")
+	if(NOT WZ_VULKANSC_PCC)
+		message(WARNING "Vulkan SC: no pipeline cache compiler (set WZ_VULKANSC_PCC). The build has no pipeline cache, and draws nothing.")
+	elseif(NOT _vksc_json_files)
+		message(WARNING "Vulkan SC: no pipeline JSON in ${_vksc_json_dir} (run tools/vulkansc/export_pipelines.sh). The build draws nothing.")
+	else()
+		list(LENGTH _vksc_json_files _vksc_json_count)
+		message(STATUS "Vulkan SC pipeline cache: ${_vksc_json_count} pipelines (profile ${WZ_VULKANSC_PROFILE}), PCC ${WZ_VULKANSC_PCC}")
+		# The PCC reads the JSON and the SPIR-V from one directory
+		set(_vksc_pcc_input_dir "${CMAKE_CURRENT_BINARY_DIR}/vulkansc_pcc_input")
+		set(_vksc_cache_dir "${CMAKE_CURRENT_BINARY_DIR}/base/shaders/vksc")
+		set(_vksc_cache "${_vksc_cache_dir}/wz2100.vksc.bin")
+		set(_vksc_manifest "${_vksc_json_dir}/wz2100_pipelines.json")
+		set(_vksc_prefix_args)
+		if(WZ_VULKANSC_PCC_PREFIX_ARG)
+			set(_vksc_prefix_args "${WZ_VULKANSC_PCC_PREFIX_ARG}" "wz2100.pc")
+		endif()
+		separate_arguments(_vksc_extra_flags UNIX_COMMAND "${WZ_VULKANSC_PCC_EXTRA_FLAGS}")
+		add_custom_command(OUTPUT "${_vksc_cache}" "${_vksc_cache_dir}/wz2100_pipelines.json"
+			COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_vksc_pcc_input_dir}"
+			COMMAND "${CMAKE_COMMAND}" -E make_directory "${_vksc_pcc_input_dir}" "${_vksc_cache_dir}"
+			COMMAND "${CMAKE_COMMAND}" -E copy ${_vksc_json_files} ${SHADER_LIST} "${_vksc_pcc_input_dir}"
+			COMMAND "${WZ_VULKANSC_PCC}" "${WZ_VULKANSC_PCC_PATH_ARG}" "${_vksc_pcc_input_dir}" ${_vksc_prefix_args} "${WZ_VULKANSC_PCC_OUT_ARG}" "${_vksc_cache}" ${_vksc_extra_flags}
+			COMMAND "${CMAKE_COMMAND}" -E copy "${_vksc_manifest}" "${_vksc_cache_dir}"
+			DEPENDS ${_vksc_json_files} "${_vksc_manifest}" ${SHADER_LIST}
+			COMMENT "Building the Vulkan SC pipeline cache (${_vksc_json_count} pipelines)"
+			VERBATIM
+		)
+		add_custom_target(vulkansc_pipeline_cache DEPENDS "${_vksc_cache}")
+		set_property(TARGET vulkansc_pipeline_cache PROPERTY FOLDER "data")
+	endif()
 endif()
 
 set(_glsl_generatedfiles_PATHS)
@@ -764,6 +820,10 @@ endif()
 if(TARGET wgsl_compilation)
 	# The WGSL files are in the build "shaders" folder, which base.wz gets with the SPIR-V files
 	add_dependencies(data_base wgsl_compilation)
+endif()
+if(TARGET vulkansc_pipeline_cache)
+	# The Vulkan SC pipeline cache is in the build "shaders" folder too
+	add_dependencies(data_base vulkansc_pipeline_cache)
 endif()
 if(TARGET texture_encoding)
 	add_dependencies(data_base texture_encoding)

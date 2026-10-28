@@ -547,6 +547,11 @@ std::vector<video_backend> wzAvailableGfxBackends()
 	availableBackends.push_back(video_backend::opengl);
 	availableBackends.push_back(video_backend::opengles);
 #endif
+#if defined(WZ_VULKANSC)
+	// The Vulkan backend of this build is Vulkan SC, which is the first backend. There is no Vulkan backend.
+	availableBackends.erase(std::remove(availableBackends.begin(), availableBackends.end(), video_backend::vulkan), availableBackends.end());
+	availableBackends.insert(availableBackends.begin(), video_backend::vulkansc);
+#endif
 	return availableBackends;
 }
 
@@ -674,9 +679,20 @@ uint32_t wzGetTicks()
 	return static_cast<uint32_t>(SDL_GetTicks());
 }
 
+// Headless runs have no window to show a dialog in. A Vulkan SC build shows none either: it presents to a
+// display, and takes input from a gamepad, which cannot answer an SDL message box; it logs the dialog instead.
+static bool wzDialogsSuppressed()
+{
+#if defined(WZ_VULKANSC)
+	return true;
+#else
+	return !WZbackend.has_value();
+#endif
+}
+
 void wzDisplayDialog(DialogType type, const char *title, const char *message)
 {
-	if (!WZbackend.has_value())
+	if (wzDialogsSuppressed())
 	{
 		// while this could be thread_local, thread_local may not yet be supported on all platforms properly
 		// and wzDisplayDialog should probably be called **only** on the main thread anyway
@@ -712,7 +728,7 @@ void wzDisplayDialog(DialogType type, const char *title, const char *message)
 // Returns 0 on failure, or the (clicked button index + 1)
 size_t wzDisplayDialogAdvanced(DialogType type, const char *title, const char *message, std::vector<std::string> buttonsText)
 {
-	if (!WZbackend.has_value())
+	if (wzDialogsSuppressed())
 	{
 		// while this could be thread_local, thread_local may not yet be supported on all platforms properly
 		// and wzDisplayDialog should probably be called **only** on the main thread anyway
@@ -2899,6 +2915,10 @@ static void WZ_SDL_setBackendProperty(SDL_PropertiesID props, const video_backen
 		case video_backend::webgpu:
 			// Dawn creates the surface itself, so SDL needs no OpenGL or Vulkan window
 			return;
+		case video_backend::vulkansc:
+			// Vulkan SC presents to a display (VK_KHR_display), not to the window, and SDL must not load
+			// the Vulkan loader
+			return;
 		case video_backend::num_backends:
 			debug(LOG_FATAL, "Should never happen");
 			break;
@@ -2914,6 +2934,11 @@ bool shouldResetGfxBackendPrompt_internal(video_backend currentBackend, video_ba
 	   { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 2, "Not Now" },
 	};
 	std::string titleString = std::string("Warzone: Failed to ") + failureVerb + " " + failedToInitializeObject;
+	if (wzDialogsSuppressed())
+	{
+		debug(LOG_ERROR, "%s (%s)", titleString.c_str(), additionalErrorDetails.c_str());
+		return false;
+	}
 	std::string messageString = std::string("Failed to ") + failureVerb + " " + failedToInitializeObject + " for backend: " + to_display_string(currentBackend) + ".\n\n";
 	if (!additionalErrorDetails.empty())
 	{
@@ -3503,7 +3528,7 @@ optional<SDL_gfx_api_Impl_Factory::Configuration> wzMainScreenSetup_CreateVideoW
 	SDL_gfx_api_Impl_Factory::Configuration sdl_impl_config;
 	sdl_impl_config.useOpenGLES = useOpenGLES;
 	sdl_impl_config.useOpenGLESLibrary = useOpenGLESLibrary;
-	if (backend == video_backend::vulkan)
+	if (backend == video_backend::vulkan || backend == video_backend::vulkansc)
 	{
 		sdl_impl_config.allowImplicitLayers = war_getAllowVulkanImplicitLayers();
 	}
@@ -3649,8 +3674,9 @@ static bool wzAttemptInitializeBackend(optional<video_backend> backend, int32_t 
 	gfx_api::backend_type gfxapi_backend = gfx_api::backend_type::null_backend;
 	if (backend.has_value())
 	{
-		if (backend.value() == video_backend::vulkan)
+		if (backend.value() == video_backend::vulkan || backend.value() == video_backend::vulkansc)
 		{
+			// In a Vulkan SC build, the Vulkan backend is the Vulkan SC backend
 			gfxapi_backend = gfx_api::backend_type::vulkan_backend;
 		}
 		else if (backend.value() == video_backend::webgpu)
@@ -3748,6 +3774,11 @@ void failedToInitializeAnyGraphicsBackendMessage_internal(const std::vector<std:
 		messageString += "\n\n";
 	}
 	messageString += _("Please update and/or reinstall your graphics drivers, and check your system settings.");
+	if (wzDialogsSuppressed())
+	{
+		debug(LOG_ERROR, "%s\n%s", titleString.c_str(), messageString.c_str());
+		return;
+	}
 	const SDL_MessageBoxData messageboxdata = {
 		SDL_MESSAGEBOX_ERROR, /* .flags */
 		WZwindow, /* .window */

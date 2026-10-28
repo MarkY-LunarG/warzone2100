@@ -4103,6 +4103,7 @@ RoomMessage buildMessage(int32_t sender, const char *text)
 	switch (sender)
 	{
 	case SYSTEM_MESSAGE:
+	case INFO_MESSAGE: // for example "Screenshot ... saved!"
 		return RoomMessage::system(text);
 	case NOTIFY_MESSAGE:
 		return RoomMessage::notify(text);

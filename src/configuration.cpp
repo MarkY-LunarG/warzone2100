@@ -66,6 +66,11 @@
 #include "3rdparty/gsl_finally.h"
 
 #include <fmt/core.h>
+#include <sstream>
+
+#if defined(WZ_VULKANSC)
+#include "vulkansc_profile.h"
+#endif
 
 // ////////////////////////////////////////////////////////////////////////////
 
@@ -304,6 +309,27 @@ static INIReaderWriter loadConfigIniFile(const char* inputFile)
 }
 
 
+#if defined(WZ_VULKANSC)
+// The Vulkan SC pipeline cache has the pipelines of one graphics profile (tools/vulkansc/profile_<name>.cfg),
+// so its settings replace the config's: a setting the profile does not have would need a pipeline the cache
+// does not have. The graphics options menu does not offer them.
+static void applyVulkanSCProfile(INIReaderWriter::IniSection& iniGeneral)
+{
+	std::istringstream profile(wzVulkanSCProfileSettings);
+	std::string line;
+	while (std::getline(profile, line))
+	{
+		const size_t separator = line.find('=');
+		if (line.empty() || line[0] == '[' || line[0] == '#' || line[0] == ';' || separator == std::string::npos)
+		{
+			continue;
+		}
+		iniGeneral.SetString(line.substr(0, separator), line.substr(separator + 1));
+	}
+	debug(LOG_INFO, "Vulkan SC: using the graphics settings of profile \"%s\"", WZ_VULKANSC_PROFILE_NAME);
+}
+#endif
+
 // ////////////////////////////////////////////////////////////////////////////
 bool loadConfig()
 {
@@ -311,6 +337,9 @@ bool loadConfig()
 	bool createdConfigFile = !ini.LoadedFromData();
 
 	auto& iniGeneral = ini.GetSection("General");
+#if defined(WZ_VULKANSC)
+	applyVulkanSCProfile(iniGeneral);
+#endif
 
 	auto iniGetInteger = [&iniGeneral](const std::string& key, optional<int> defaultValue) -> optional<int> {
 		return iniSectionGetInteger(iniGeneral, key, defaultValue);

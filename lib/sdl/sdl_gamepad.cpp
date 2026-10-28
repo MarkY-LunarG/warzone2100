@@ -25,6 +25,7 @@
 #include "lib/framework/file.h"
 #include "lib/framework/input.h"
 #include "sdl_gamepad.h"
+#include "sdl_gamepad_script.h"
 #include "sdl_backend_private.h"
 #include "src/warzoneconfig.h"
 #include "lib/ivis_opengl/screen.h"
@@ -428,6 +429,10 @@ void wzGamepadInit()
 		return;
 	}
 	SDL_SetHint(SDL_HINT_JOYSTICK_THREAD, "1");
+#if defined(WZ_VULKANSC)
+	// Vulkan SC presents to a display, not to the window, so the window never has focus: take gamepad input anyway
+	SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+#endif
 	if (!wzSDLOneTimeInitSubsystem(SDL_INIT_GAMEPAD))
 	{
 		debug(LOG_WARNING, "Failed to initialize SDL gamepad subsystem: %s", SDL_GetError());
@@ -436,10 +441,12 @@ void wzGamepadInit()
 	subsystemInitialized = true;
 	// devices connected right now arrive as SDL_EVENT_GAMEPAD_ADDED events
 	debug(LOG_INPUT, "SDL gamepad subsystem initialized");
+	wzGamepadScriptInit();
 }
 
 void wzGamepadShutdown()
 {
+	wzGamepadScriptShutdown();
 	for (const auto& pad : openGamepads)
 	{
 		SDL_CloseGamepad(pad.handle);
@@ -1154,6 +1161,9 @@ static void updateSyntheticInput()
 
 void wzGamepadUpdate()
 {
+	// Before the active pad is read: the script's virtual gamepad becomes the active pad through its input
+	wzGamepadScriptUpdate();
+
 	const OpenGamepad* activePad = activeGamepadEntry();
 	if (!activePad)
 	{

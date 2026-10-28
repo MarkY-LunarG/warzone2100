@@ -27,6 +27,7 @@
 #include "screenshot_readback.h"
 
 #include "gfx_api_vk.h"
+#include "screen.h"
 #include "lib/framework/wzapp.h"
 
 namespace gfx_api::vk
@@ -34,22 +35,6 @@ namespace gfx_api::vk
 
 namespace
 {
-
-uint32_t findHostVisibleCoherentMemoryType(const ::vk::PhysicalDeviceMemoryProperties& memprops,
-	uint32_t memoryTypeBits)
-{
-	const auto required = static_cast<::vk::MemoryPropertyFlags>(
-		::vk::MemoryPropertyFlagBits::eHostVisible | ::vk::MemoryPropertyFlagBits::eHostCoherent);
-	for (uint32_t i = 0; i < memprops.memoryTypeCount; ++i)
-	{
-		if ((memoryTypeBits & (1u << i)) != 0
-			&& (memprops.memoryTypes[i].propertyFlags & required) == required)
-		{
-			return i;
-		}
-	}
-	return UINT32_MAX;
-}
 
 enum class SwapchainPixelLayout
 {
@@ -135,77 +120,77 @@ void decodeSwapchainPixel(const uint8_t* srcPixel, SwapchainPixelLayout layout, 
 
 } // namespace
 
-bool ScreenshotStagingBuffer::create(::vk::Device device,
-	const ::vk::PhysicalDeviceMemoryProperties& memprops, uint32_t width, uint32_t height,
+bool ScreenshotStagingBuffer::create(VmaAllocator vmaAllocator,
+	const VmaAllocationCreateInfo& allocInfo, uint32_t width, uint32_t height,
 	uint32_t bytesPerPixel, ::vk::DeviceSize bufferImageGranularity,
 	const WZ_vk::DispatchLoaderDynamic& loader)
 {
-	destroy(loader);
-
 	const ::vk::DeviceSize tightRowBytes = static_cast<::vk::DeviceSize>(width) * bytesPerPixel;
-	rowPitch = ((tightRowBytes + bufferImageGranularity - 1) / bufferImageGranularity) * bufferImageGranularity;
-	size = rowPitch * height;
+	const ::vk::DeviceSize newRowPitch = ((tightRowBytes + bufferImageGranularity - 1) / bufferImageGranularity) * bufferImageGranularity;
+	const ::vk::DeviceSize newSize = newRowPitch * height;
+	if (allocator == vmaAllocator && buffer && newSize <= capacity)
+	{
+		// Reuse the existing buffer and its memory.
+		rowPitch = newRowPitch;
+		size = newSize;
+		return true;
+	}
+
+	destroy(loader);
+	rowPitch = newRowPitch;
+	size = newSize;
+	capacity = newSize;
 
 	const ::vk::BufferCreateInfo bufferInfo({}, size, ::vk::BufferUsageFlagBits::eTransferDst,
 		::vk::SharingMode::eExclusive);
-	buffer = device.createBuffer(bufferInfo, nullptr, loader);
-
-	const ::vk::MemoryRequirements memRequirements = device.getBufferMemoryRequirements(buffer, loader);
-	const uint32_t memoryTypeIndex = findHostVisibleCoherentMemoryType(memprops, memRequirements.memoryTypeBits);
-	if (memoryTypeIndex == UINT32_MAX)
+	const VkResult result = vmaCreateBuffer(vmaAllocator, reinterpret_cast<const VkBufferCreateInfo*>(&bufferInfo), &allocInfo,
+		reinterpret_cast<VkBuffer*>(&buffer), &allocation, nullptr);
+	if (result != VK_SUCCESS)
 	{
+		buffer = ::vk::Buffer{};
+		allocation = VK_NULL_HANDLE;
 		destroy(loader);
 		return false;
 	}
-
-	const ::vk::MemoryAllocateInfo allocInfo(memRequirements.size, memoryTypeIndex);
-	memory = device.allocateMemory(allocInfo, nullptr, loader);
-	device.bindBufferMemory(buffer, memory, 0, loader);
-	dev = device;
+	allocator = vmaAllocator;
 	return true;
 }
 
 void ScreenshotStagingBuffer::destroy(const WZ_vk::DispatchLoaderDynamic& loader)
 {
-	if (!dev)
+	if (allocator != VK_NULL_HANDLE && buffer)
 	{
-		buffer = ::vk::Buffer{};
-		memory = ::vk::DeviceMemory{};
-		size = 0;
-		rowPitch = 0;
-		return;
+		vmaDestroyBuffer(allocator, static_cast<VkBuffer>(buffer), allocation);
 	}
-
-	if (memory)
-	{
-		dev.freeMemory(memory, nullptr, loader);
-	}
-	if (buffer)
-	{
-		dev.destroyBuffer(buffer, nullptr, loader);
-	}
-
-	dev = ::vk::Device{};
+	allocator = VK_NULL_HANDLE;
 	buffer = ::vk::Buffer{};
-	memory = ::vk::DeviceMemory{};
+	allocation = VK_NULL_HANDLE;
 	size = 0;
+	capacity = 0;
 	rowPitch = 0;
 }
 
 void* ScreenshotStagingBuffer::map(const WZ_vk::DispatchLoaderDynamic& loader) const
 {
-	if (!dev || !memory)
+	void* data = nullptr;
+	if (allocator == VK_NULL_HANDLE || allocation == VK_NULL_HANDLE
+		|| vmaMapMemory(allocator, allocation, &data) != VK_SUCCESS)
 	{
 		return nullptr;
 	}
-	return dev.mapMemory(memory, 0, size, {}, loader);
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: make the GPU's writes visible to the CPU with a direct call
+		::flushMappedAllocationRange(allocator, allocation, true, loader);
+	}
+	return data;
 }
 
 void ScreenshotStagingBuffer::unmap(const WZ_vk::DispatchLoaderDynamic& loader) const
 {
-	if (dev && memory)
+	if (allocator != VK_NULL_HANDLE && allocation != VK_NULL_HANDLE)
 	{
-		dev.unmapMemory(memory, loader);
+		vmaUnmapMemory(allocator, allocation);
 	}
 }
 
@@ -232,14 +217,19 @@ size_t ScreenshotReadback::totalPendingCount() const
 void ScreenshotReadback::destroyCaptureResources(PendingCapture& capture,
 	const WZ_vk::DispatchLoaderDynamic& loader)
 {
-	capture.staging.destroy(loader);
+	// Keep the staging buffer for the next capture (see releaseStagingBuffers()).
+	if (capture.staging.buffer)
+	{
+		_freeStaging.push_back(capture.staging);
+	}
+	capture.staging = ScreenshotStagingBuffer{};
 	capture.callback = {};
 	capture.gpuRecorded = false;
 	capture.gpuSubmitted = false;
 }
 
 bool ScreenshotReadback::requestCapture(std::function<void(std::unique_ptr<iV_Image>)> callback,
-	::vk::Device dev, const ::vk::PhysicalDeviceMemoryProperties& memprops,
+	VmaAllocator allocator, const VmaAllocationCreateInfo& stagingAllocInfo,
 	::vk::DeviceSize bufferImageGranularity, ::vk::Extent2D extent, ::vk::Format srcFormat,
 	uint32_t swapchainImageIndex, uint32_t ringSlot, const WZ_vk::DispatchLoaderDynamic& loader)
 {
@@ -274,8 +264,13 @@ bool ScreenshotReadback::requestCapture(std::function<void(std::unique_ptr<iV_Im
 	capture.swapchainImageIndex = swapchainImageIndex;
 	capture.ringSlot = ringSlot;
 	capture.callback = std::move(callback);
+	if (!_freeStaging.empty())
+	{
+		capture.staging = _freeStaging.back();
+		_freeStaging.pop_back();
+	}
 
-	if (!capture.staging.create(dev, memprops, extent.width, extent.height, 4, bufferImageGranularity, loader))
+	if (!capture.staging.create(allocator, stagingAllocInfo, extent.width, extent.height, 4, bufferImageGranularity, loader))
 	{
 		debug(LOG_ERROR, "ScreenshotReadback: failed to allocate staging buffer");
 		destroyCaptureResources(capture, loader);
@@ -478,6 +473,16 @@ void ScreenshotReadback::cancelAll(const WZ_vk::DispatchLoaderDynamic& loader)
 void ScreenshotReadback::shutdown(const WZ_vk::DispatchLoaderDynamic& loader)
 {
 	cancelAll(loader);
+}
+
+void ScreenshotReadback::releaseStagingBuffers(const WZ_vk::DispatchLoaderDynamic& loader)
+{
+	cancelAll(loader);
+	for (auto& staging : _freeStaging)
+	{
+		staging.destroy(loader);
+	}
+	_freeStaging.clear();
 }
 
 } // namespace gfx_api::vk

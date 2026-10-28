@@ -27,8 +27,10 @@
 #include "vk/render_pass_layout_cache.h"
 
 #include "gfx_api_vk.h"
+#include "screen.h"
 #include "vk/layout_key_builder.h"
 #include "vk/layout_sync.h"
+#include "vk/pipeline_names.h"
 
 #include <array>
 
@@ -394,7 +396,30 @@ size_t RenderPassLayoutCache::getOrCreate(const PassLayoutKey& key)
 	auto& renderPassDetails = _root.renderPasses[renderPassId];
 	renderPassDetails.rp_compat_info = std::make_shared<VkhRenderPassCompat>(createInfo);
 	renderPassDetails.rp = _root.dev.createRenderPass(createInfo, nullptr, _root.vkDynLoader);
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: the render area alignment that gives the best performance
+		const ::vk::Extent2D granularity = _root.dev.getRenderAreaGranularity(renderPassDetails.rp, _root.vkDynLoader);
+		debug(LOG_3D, "Render pass %zu: render area granularity %" PRIu32 "x%" PRIu32, renderPassId, granularity.width, granularity.height);
+	}
 	renderPassDetails.msaaSamples = hasMsaaResolve ? _root.msaaSamples : ::vk::SampleCountFlagBits::e1;
+	renderPassDetails.psoSlot = renderPassId;
+	renderPassDetails.className = renderPassClassName(createInfo);
+	if (_root.pipelineJsonExport)
+	{
+		_root.pipelineJsonExport->recordRenderPass(static_cast<const VkRenderPassCreateInfo&>(createInfo), static_cast<VkRenderPass>(renderPassDetails.rp));
+		_root.pipelineJsonExport->recordRenderPassClass(renderPassDetails.className, key);
+	}
+	for (size_t otherId = 0; otherId < renderPassId; ++otherId)
+	{
+		const auto& other = _root.renderPasses[otherId];
+		if (other.rp && other.psoSlot == otherId && other.msaaSamples == renderPassDetails.msaaSamples
+			&& other.rp_compat_info->isCompatibleWith(*renderPassDetails.rp_compat_info))
+		{
+			renderPassDetails.psoSlot = otherId;
+			break;
+		}
+	}
 
 	_keys.push_back(key);
 	_root.ensureRenderPassPSOCapacity(_root.renderPasses.size());

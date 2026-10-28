@@ -504,6 +504,9 @@ static const struct poptOption *getOptionsTable()
 #if defined(WZ_WEBGPU_ENABLED)
 			", webgpu"
 #endif
+#if defined(WZ_VULKANSC)
+			", vulkansc"
+#endif
 #if defined(WZ_BACKEND_DIRECTX)
 			", directx"
 #endif
