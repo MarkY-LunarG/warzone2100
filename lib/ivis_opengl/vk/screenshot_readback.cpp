@@ -27,6 +27,7 @@
 #include "screenshot_readback.h"
 
 #include "gfx_api_vk.h"
+#include "screen.h"
 #include "lib/framework/wzapp.h"
 
 namespace gfx_api::vk
@@ -176,6 +177,11 @@ void* ScreenshotStagingBuffer::map(const WZ_vk::DispatchLoaderDynamic& loader) c
 		|| vmaMapMemory(allocator, allocation, &data) != VK_SUCCESS)
 	{
 		return nullptr;
+	}
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: make the GPU's writes visible to the CPU with a direct call
+		::flushMappedAllocationRange(allocator, allocation, true, loader);
 	}
 	return data;
 }

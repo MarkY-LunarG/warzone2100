@@ -54,6 +54,7 @@
 // transitionImageLayout, getVkImageHandle, and getVkImageAspect remain here as facades for vk/ friends.
 
 #include "gfx_api_vk.h"
+#include "screen.h"
 #include "shader_catalog.h"
 #include "png_util.h"
 #include "render_graph/layout_subresource.h"
@@ -814,6 +815,45 @@ void BlockBufferAllocator::flushAutomappedMemory()
 	}
 }
 
+void BlockBufferAllocator::flushAutomappedMemoryRanges(const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	ASSERT(autoMap, "Only useful when autoMap == true");
+	for (auto& block : blocks)
+	{
+		ASSERT(block.pMappedMemory != nullptr, "Block must still be (auto-)mapped");
+		flushMappedAllocationRange(allocator, block.allocation, false, vkDynLoader);
+	}
+}
+
+void flushMappedAllocationRange(VmaAllocator allocator, VmaAllocation allocation, bool invalidate, const WZ_vk::DispatchLoaderDynamic& vkDynLoader)
+{
+	VmaAllocatorInfo allocatorInfo = {};
+	vmaGetAllocatorInfo(allocator, &allocatorInfo);
+	const VkPhysicalDeviceProperties* properties = nullptr;
+	vmaGetPhysicalDeviceProperties(allocator, &properties);
+	VmaAllocationInfo2 allocationInfo = {};
+	vmaGetAllocationInfo2(allocator, allocation, &allocationInfo);
+
+	// The range starts and ends at a multiple of nonCoherentAtomSize, or ends at the end of the memory
+	const VkDeviceSize atomSize = std::max<VkDeviceSize>(properties->limits.nonCoherentAtomSize, 1);
+	const VkDeviceSize begin = (allocationInfo.allocationInfo.offset / atomSize) * atomSize;
+	const VkDeviceSize alignedEnd = ((allocationInfo.allocationInfo.offset + allocationInfo.allocationInfo.size + atomSize - 1) / atomSize) * atomSize;
+	const VkDeviceSize end = std::min(alignedEnd, allocationInfo.blockSize);
+	const auto range = vk::MappedMemoryRange()
+		.setMemory(allocationInfo.allocationInfo.deviceMemory)
+		.setOffset(begin)
+		.setSize(end - begin);
+	const vk::Device device(allocatorInfo.device);
+	if (invalidate)
+	{
+		device.invalidateMappedMemoryRanges(range, vkDynLoader);
+	}
+	else
+	{
+		device.flushMappedMemoryRanges(range, vkDynLoader);
+	}
+}
+
 void BlockBufferAllocator::clean()
 {
 	if (autoMap)
@@ -905,6 +945,11 @@ perFrameResources_t::perFrameResources_t(vk::Device& _dev, const VmaAllocator& a
 		.setQueueFamilyIndex(graphicsQueueFamilyIndex);
 	auto copyPoolCreateInfo = vk::CommandPoolCreateInfo()
 		.setQueueFamilyIndex(graphicsQueueFamilyIndex);
+	if (uses_heavy_api_coverage)
+	{
+		// The copy command buffer is reset alone (vkResetCommandBuffer), not with its pool
+		copyPoolCreateInfo.setFlags(vk::CommandPoolCreateFlagBits::eResetCommandBuffer);
+	}
 #if defined(WZ_VULKANSC)
 	// The draw pool also lends setupSwapchainImages() one command buffer
 	gfx_api::vk::sc::CommandPoolChainStorage poolChainStorage;
@@ -1236,11 +1281,16 @@ void buffering_mechanism::swap(vk::Device dev, const WZ_vk::DispatchLoaderDynami
 	currentFrame = (currentFrame < (perFrameResources.size() - 1)) ? currentFrame + 1 : 0;
 
 	const auto fences = std::array<vk::Fence, 1> { buffering_mechanism::get_current_resources().previousSubmission };
-	auto waitResult = dev.waitForFences(fences, true, -1, vkDynLoader);
-	if (waitResult == vk::Result::eTimeout)
+	// --api-coverage=heavy: no wait when the GPU is done with the frame slot already
+	const bool frameSlotFree = uses_heavy_api_coverage && (dev.getFenceStatus(fences[0], vkDynLoader) == vk::Result::eSuccess);
+	if (!frameSlotFree)
 	{
-		debug(LOG_ERROR, "buffering swap: waitForFences resulted in vk::Result::eTimeout");
-		handleUnrecoverableError(vk::Result::eTimeout);
+		auto waitResult = dev.waitForFences(fences, true, -1, vkDynLoader);
+		if (waitResult == vk::Result::eTimeout)
+		{
+			debug(LOG_ERROR, "buffering swap: waitForFences resulted in vk::Result::eTimeout");
+			handleUnrecoverableError(vk::Result::eTimeout);
+		}
 	}
 	dev.resetFences(fences, vkDynLoader);
 #if defined(WZ_VULKANSC)
@@ -1260,7 +1310,14 @@ void buffering_mechanism::swap(vk::Device dev, const WZ_vk::DispatchLoaderDynami
 #endif
 	buffering_mechanism::get_current_resources().resetDescriptorPools();
 	dev.resetCommandPool(buffering_mechanism::get_current_resources().pool, vk::CommandPoolResetFlagBits(), vkDynLoader);
-	dev.resetCommandPool(buffering_mechanism::get_current_resources().copyPool, vk::CommandPoolResetFlagBits(), vkDynLoader);
+	if (uses_heavy_api_coverage)
+	{
+		buffering_mechanism::get_current_resources().cmdCopy.reset(vk::CommandBufferResetFlags(), vkDynLoader);
+	}
+	else
+	{
+		dev.resetCommandPool(buffering_mechanism::get_current_resources().copyPool, vk::CommandPoolResetFlagBits(), vkDynLoader);
+	}
 	buffering_mechanism::get_current_resources().drawCmdBufferBegun = false;
 	buffering_mechanism::get_current_resources().copyCmdBufferBegun = false;
 	buffering_mechanism::get_current_resources().transferWorkRecorded = false;
@@ -5304,6 +5361,21 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 		instanceExtensions.insert(std::end(instanceExtensions), supportedOptionalInstanceExtensions.begin(), supportedOptionalInstanceExtensions.end());
 	}
 
+	// --api-coverage=heavy: the extensions of the surface queries in logApiCoverageInfo()
+	if (uses_heavy_api_coverage)
+	{
+		std::vector<const char*> coverageInstanceExtensions = { VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME };
+		if (instanceExtensionEnabled(VK_KHR_DISPLAY_EXTENSION_NAME))
+		{
+			coverageInstanceExtensions.push_back(VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME);
+		}
+		std::vector<const char*> supportedCoverageInstanceExtensions;
+		if (findSupportedInstanceExtensions(coverageInstanceExtensions, supportedCoverageInstanceExtensions, _vkGetInstanceProcAddr))
+		{
+			instanceExtensions.insert(std::end(instanceExtensions), supportedCoverageInstanceExtensions.begin(), supportedCoverageInstanceExtensions.end());
+		}
+	}
+
 	if (!createVulkanInstance(requestedInstanceApiVersion, instanceExtensions, layers, _vkGetInstanceProcAddr))
 	{
 		debug(LOG_ERROR, "createVulkanInstance failed");
@@ -5467,6 +5539,13 @@ bool VkRoot::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_t anti
 		// Encountered some other exception (possibly bad_alloc, etc)
 		debug(LOG_ERROR, "createSwapchain() failed with an exception: %s", e.what());
 		return false;
+	}
+
+	if (uses_heavy_api_coverage)
+	{
+		logApiCoverageInfo();
+		// GPU frame timing for every frame, not only with dynamic resolution
+		setGpuFrameTimingEnabled(true);
 	}
 
 	if (depthMapSize == 0)
@@ -5956,6 +6035,14 @@ bool VkRoot::createLogicalDevice()
 	enabledDeviceExtensions = deviceExtensions;
 	auto supportedOptionalExtensions = findSupportedDeviceExtensions(physicalDevice, optionalDeviceExtensions, vkDynLoader);
 	enabledDeviceExtensions.insert(std::end(enabledDeviceExtensions), supportedOptionalExtensions.begin(), supportedOptionalExtensions.end());
+	// --api-coverage=heavy: the GPU timestamps on the CPU clock (logCalibratedTimestamps())
+	calibratedTimestampsEnabled = false;
+	if (uses_heavy_api_coverage)
+	{
+		const auto supportedCoverageExtensions = findSupportedDeviceExtensions(physicalDevice, { VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME }, vkDynLoader);
+		enabledDeviceExtensions.insert(std::end(enabledDeviceExtensions), supportedCoverageExtensions.begin(), supportedCoverageExtensions.end());
+		calibratedTimestampsEnabled = !supportedCoverageExtensions.empty();
+	}
 
 	// create logical device
 	std::vector<vk::DeviceQueueCreateInfo> queueCreateInfos;
@@ -7621,6 +7708,12 @@ gfx_api::vk::TransferRecorder VkRoot::transferRecorder() const
 
 void perFrameResources_t::flushMappedAllocators()
 {
+	if (uses_heavy_api_coverage)
+	{
+		uniformBufferAllocator.flushAutomappedMemoryRanges(*pVkDynLoader);
+		streamedVertexBufferAllocator.flushAutomappedMemoryRanges(*pVkDynLoader);
+		lightDataBufferAllocator.flushAutomappedMemoryRanges(*pVkDynLoader);
+	}
 	uniformBufferAllocator.flushAutomappedMemory();
 	uniformBufferAllocator.unmapAutomappedMemory();
 	streamedVertexBufferAllocator.flushAutomappedMemory();
@@ -7762,7 +7855,18 @@ void VkRoot::sealAndSubmitTransferGraphics(ScreenFramePipelineState& state)
 				? &buffering_mechanism::get_swapchain_resources(currentSwapchainIndex).renderFinishedSemaphore
 				: nullptr,
 		};
+		// --api-coverage=heavy: a queue label around the frame's submit
+		const bool queueLabels = uses_heavy_api_coverage && debugUtilsExtEnabled;
+		if (queueLabels)
+		{
+			const std::string labelName = "Frame " + std::to_string(frameNum);
+			graphicsQueue.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT().setPLabelName(labelName.c_str()), vkDynLoader);
+		}
 		frameResources.submitCommandBuffers(submitParams, state);
+		if (queueLabels)
+		{
+			graphicsQueue.endDebugUtilsLabelEXT(vkDynLoader);
+		}
 
 		if (state.submitDrawBuffer)
 		{
@@ -7910,6 +8014,10 @@ void VkRoot::finishScreenFrame()
 #if defined(WZ_VULKANSC)
 	updateVulkanSCMemoryPoolPeaks();
 #endif
+	if (calibratedTimestampsEnabled && (frameNum % 600) == 0)
+	{
+		logCalibratedTimestamps();
+	}
 	// Debug aid: WZ_VULKAN_DEBUG_SCREENSHOT=<frame>:<file.png> saves that frame as a PNG
 	// (the file name is relative to the write directory, --configdir).
 	static const std::pair<size_t, std::string> debugScreenshot = []() -> std::pair<size_t, std::string> {
@@ -8237,6 +8345,11 @@ bool VkRoot::setGpuFrameTimingEnabled(bool enabled)
 	{
 		return true;
 	}
+	if (!enabled && uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy keeps GPU frame timing on
+		return true;
+	}
 	if (enabled && !gpuTimingQueryPool)
 	{
 		try {
@@ -8344,6 +8457,143 @@ void VkRoot::writeGpuTimingEndIfOpen(vk::CommandBuffer cmdBuffer)
 	slot.inFlight = true;
 	gpuTimingWriteIdx = (gpuTimingWriteIdx + 1) % GPU_TIMING_SLOTS;
 	gpuTimingFrameOpen = false;
+}
+
+bool VkRoot::instanceExtensionEnabled(const char* extensionName) const
+{
+	return std::any_of(instanceExtensions.begin(), instanceExtensions.end(), [extensionName](const char* name) {
+		return strcmp(name, extensionName) == 0;
+	});
+}
+
+// --api-coverage=heavy: query the device, the surface, and the display with more of the API, for capture tools.
+// The queries run before the debug() lines, because debug() skips its arguments when the log part is off.
+void VkRoot::logApiCoverageInfo()
+{
+	const vk::ImageUsageFlags textureUsage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+	try {
+		const auto textureLimits = physicalDevice.getImageFormatProperties(vk::Format::eR8G8B8A8Unorm, vk::ImageType::e2D,
+			vk::ImageTiling::eOptimal, textureUsage, vk::ImageCreateFlags(), vkDynLoader);
+		debug(LOG_3D, "API coverage: RGBA8 textures up to %" PRIu32 "x%" PRIu32 ", %" PRIu32 " mip levels",
+			textureLimits.maxExtent.width, textureLimits.maxExtent.height, textureLimits.maxMipLevels);
+
+		if (canUseVulkanInstanceAPI(VK_API_VERSION_1_1))
+		{
+			const auto deviceGroups = inst.enumeratePhysicalDeviceGroups(vkDynLoader);
+			debug(LOG_3D, "API coverage: %zu physical device groups", deviceGroups.size());
+		}
+
+		if (canUseVulkanDeviceAPI(VK_API_VERSION_1_1))
+		{
+			const auto queueFamilies = physicalDevice.getQueueFamilyProperties2(vkDynLoader);
+			const auto memoryProperties = physicalDevice.getMemoryProperties2(vkDynLoader);
+			const auto depthFormatProperties = physicalDevice.getFormatProperties2(depthBufferFormat, vkDynLoader);
+			const auto textureLimits2 = physicalDevice.getImageFormatProperties2(
+				vk::PhysicalDeviceImageFormatInfo2()
+					.setFormat(vk::Format::eR8G8B8A8Unorm)
+					.setType(vk::ImageType::e2D)
+					.setTiling(vk::ImageTiling::eOptimal)
+					.setUsage(textureUsage),
+				vkDynLoader);
+			const vk::Queue graphicsQueue2 = dev.getQueue2(
+				vk::DeviceQueueInfo2()
+					.setQueueFamilyIndex(queueFamilyIndices.graphicsFamily.value())
+					.setQueueIndex(0),
+				vkDynLoader);
+			const auto presentRectangles = physicalDevice.getPresentRectanglesKHR(surface, vkDynLoader);
+			debug(LOG_3D, "API coverage: %zu queue families, %" PRIu32 " memory heaps, depth format features 0x%x, RGBA8 texture array layers %" PRIu32 ", graphics queue %s, %zu present rectangles",
+				queueFamilies.size(), memoryProperties.memoryProperties.memoryHeapCount,
+				static_cast<uint32_t>(depthFormatProperties.formatProperties.optimalTilingFeatures),
+				textureLimits2.imageFormatProperties.maxArrayLayers,
+				(graphicsQueue2 == graphicsQueue) ? "matches" : "DIFFERS", presentRectangles.size());
+		}
+	}
+	catch (const vk::SystemError& e)
+	{
+		debug(LOG_3D, "API coverage: device queries failed: %s", e.what());
+	}
+
+	try {
+		if (instanceExtensionEnabled(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME))
+		{
+			const auto surfaceInfo = vk::PhysicalDeviceSurfaceInfo2KHR().setSurface(surface);
+			const auto surfaceCapabilities2 = physicalDevice.getSurfaceCapabilities2KHR(surfaceInfo, vkDynLoader);
+			const auto surfaceFormats2 = physicalDevice.getSurfaceFormats2KHR(surfaceInfo, vkDynLoader);
+			debug(LOG_3D, "API coverage: surface up to %" PRIu32 " images, %zu formats",
+				surfaceCapabilities2.surfaceCapabilities.maxImageCount, surfaceFormats2.size());
+		}
+		if (instanceExtensionEnabled(VK_EXT_DISPLAY_SURFACE_COUNTER_EXTENSION_NAME))
+		{
+			const auto surfaceCounters = physicalDevice.getSurfaceCapabilities2EXT(surface, vkDynLoader);
+			debug(LOG_3D, "API coverage: surface counters 0x%x", static_cast<uint32_t>(surfaceCounters.supportedSurfaceCounters));
+		}
+	}
+	catch (const vk::SystemError& e)
+	{
+		debug(LOG_3D, "API coverage: surface queries failed: %s", e.what());
+	}
+
+	if (calibratedTimestampsEnabled)
+	{
+		// The GPU time domain and a CPU clock, to put the GPU frame timing on the CPU timeline
+		calibratedTimestampsEnabled = false;
+		try {
+			const auto timeDomains = physicalDevice.getCalibrateableTimeDomainsKHR(vkDynLoader);
+			const bool hasDeviceDomain = std::find(timeDomains.begin(), timeDomains.end(), vk::TimeDomainKHR::eDevice) != timeDomains.end();
+			for (const auto hostDomain : { vk::TimeDomainKHR::eClockMonotonic, vk::TimeDomainKHR::eQueryPerformanceCounter })
+			{
+				if (hasDeviceDomain && std::find(timeDomains.begin(), timeDomains.end(), hostDomain) != timeDomains.end())
+				{
+					calibrationHostTimeDomain = hostDomain;
+					calibratedTimestampsEnabled = true;
+					break;
+				}
+			}
+			debug(LOG_3D, "API coverage: %zu calibrateable time domains", timeDomains.size());
+		}
+		catch (const vk::SystemError& e)
+		{
+			debug(LOG_3D, "API coverage: vkGetPhysicalDeviceCalibrateableTimeDomainsKHR failed: %s", e.what());
+		}
+		if (calibratedTimestampsEnabled)
+		{
+			logCalibratedTimestamps();
+		}
+	}
+
+	if (debugUtilsExtEnabled)
+	{
+		// A tag on the device, and a message through the debug messenger
+		static const char coverageTag[] = "api-coverage=heavy";
+		dev.setDebugUtilsObjectTagEXT(
+			vk::DebugUtilsObjectTagInfoEXT()
+				.setObjectType(vk::ObjectType::eDevice)
+				.setObjectHandle(reinterpret_cast<uint64_t>(static_cast<VkDevice>(dev)))
+				.setTagName(1)
+				.setTagSize(sizeof(coverageTag))
+				.setPTag(coverageTag),
+			vkDynLoader);
+		inst.submitDebugUtilsMessageEXT(vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo, vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral,
+			vk::DebugUtilsMessengerCallbackDataEXT().setPMessage("Warzone 2100: --api-coverage=heavy"), vkDynLoader);
+	}
+}
+
+void VkRoot::logCalibratedTimestamps()
+{
+	const auto timestampInfos = std::array<vk::CalibratedTimestampInfoKHR, 2> {
+		vk::CalibratedTimestampInfoKHR().setTimeDomain(vk::TimeDomainKHR::eDevice),
+		vk::CalibratedTimestampInfoKHR().setTimeDomain(calibrationHostTimeDomain)
+	};
+	try {
+		const auto timestamps = dev.getCalibratedTimestampsKHR(timestampInfos, vkDynLoader);
+		debug(LOG_3D, "API coverage: frame %zu, GPU timestamp %" PRIu64 ", CPU clock %" PRIu64 ", max deviation %" PRIu64 " ns",
+			frameNum, timestamps.first[0], timestamps.first[1], timestamps.second);
+	}
+	catch (const vk::SystemError& e)
+	{
+		debug(LOG_3D, "API coverage: vkGetCalibratedTimestampsKHR failed: %s", e.what());
+		calibratedTimestampsEnabled = false;
+	}
 }
 
 bool VkRoot::setSceneUpscalingMode(gfx_api::context::scene_upscaling_mode mode)

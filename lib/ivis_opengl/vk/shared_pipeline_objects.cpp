@@ -28,6 +28,7 @@
 #include "vk/pipeline_json_export.h"
 
 #include "lib/framework/frame.h"
+#include "lib/ivis_opengl/screen.h"
 
 #include <type_traits>
 
@@ -89,6 +90,15 @@ uint64_t handleKey(Handle handle)
 		const auto createInfo = ::vk::DescriptorSetLayoutCreateInfo()
 			.setBindingCount(static_cast<uint32_t>(bindings.size()))
 			.setPBindings(bindings.data());
+		if (uses_heavy_api_coverage && vkDynLoader.vkGetDescriptorSetLayoutSupport != nullptr)
+		{
+			// --api-coverage=heavy: ask the device if it supports the layout before it is created
+			const auto support = dev.getDescriptorSetLayoutSupport(createInfo, vkDynLoader);
+			if (!support.supported)
+			{
+				debug(LOG_ERROR, "The device does not support a descriptor set layout with %zu bindings", bindings.size());
+			}
+		}
 		const auto layout = dev.createDescriptorSetLayout(createInfo, nullptr, vkDynLoader);
 		if (_pipelineJsonExport)
 		{

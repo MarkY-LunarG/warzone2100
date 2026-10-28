@@ -394,6 +394,7 @@ typedef enum
 	CLI_GFXBACKEND,
 	CLI_VIDEODECODER,
 	CLI_GFXDEBUG,
+	CLI_APICOVERAGE,
 	CLI_GAMEPAD,
 	CLI_JSBACKEND,
 	CLI_AUTOGAME,
@@ -513,6 +514,7 @@ static const struct poptOption *getOptionsTable()
 		},
 		{ "videodecoder", POPT_ARG_STRING, CLI_VIDEODECODER, N_("Set video decode backend"), nullptr },	// filled in below
 		{ "gfxdebug", POPT_ARG_NONE, CLI_GFXDEBUG, N_("Use gfx backend debug"), nullptr },
+		{ "api-coverage", POPT_ARG_STRING, CLI_APICOVERAGE, N_("Set how much of the graphics API to use (heavy: more calls, for capture tools)"), "(default, heavy)" },
 		{ "gamepad", POPT_ARG_STRING, CLI_GAMEPAD, N_("Set gamepad support mode"), "(auto, on, off)" },
 		{ "jsbackend", POPT_ARG_STRING, CLI_JSBACKEND, N_("Set JS backend"),
 					"("
@@ -1226,6 +1228,28 @@ bool ParseCommandLine(int argc, const char * const *argv)
 		case CLI_GFXDEBUG:
 			uses_gfx_debug = true;
 			break;
+
+		case CLI_APICOVERAGE:
+			{
+				token = poptGetOptArg(poptCon);
+				if (token == nullptr)
+				{
+					qFatal("Missing api-coverage value");
+				}
+				if (strcmp(token, "default") == 0)
+				{
+					uses_heavy_api_coverage = false;
+				}
+				else if (strcmp(token, "heavy") == 0)
+				{
+					uses_heavy_api_coverage = true;
+				}
+				else
+				{
+					qFatal("Unsupported / invalid api-coverage value (default, heavy)");
+				}
+				break;
+			}
 
 		case CLI_GAMEPAD:
 			{

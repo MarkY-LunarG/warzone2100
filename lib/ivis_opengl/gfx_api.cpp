@@ -34,6 +34,7 @@
 
 static gfx_api::backend_type backend = gfx_api::backend_type::opengl_backend;
 bool uses_gfx_debug = false;
+bool uses_heavy_api_coverage = false;
 static gfx_api::context* current_backend_context = nullptr;
 
 namespace gfx_api {

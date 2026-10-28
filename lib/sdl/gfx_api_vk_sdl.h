@@ -55,6 +55,8 @@ private:
 	// display plane surface (VK_KHR_display), whose size is the display mode's.
 	SDL_SharedObject* m_vulkanSCLibrary = nullptr;
 	PFN_vkGetInstanceProcAddr m_getInstanceProcAddr = nullptr;
+	// --api-coverage=heavy: the display queries of VK_KHR_get_display_properties2
+	bool m_useDisplayProperties2 = false;
 	int m_displayWidth = 0;
 	int m_displayHeight = 0;
 #endif

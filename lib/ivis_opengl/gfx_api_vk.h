@@ -120,6 +120,11 @@ namespace std {
 	};
 }
 
+// --api-coverage=heavy: flushes (or invalidates) the mapped memory of an allocation with a direct
+// vkFlushMappedMemoryRanges (or vkInvalidateMappedMemoryRanges) call. VMA makes no call for
+// host-coherent memory.
+void flushMappedAllocationRange(VmaAllocator allocator, VmaAllocation allocation, bool invalidate, const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
+
 struct BlockBufferAllocator
 {
 	BlockBufferAllocator(VmaAllocator allocator, uint32_t minimumBlockSize, const vk::BufferUsageFlags& usageFlags, const VmaAllocationCreateInfo& allocInfo, bool autoMap = false);
@@ -158,6 +163,8 @@ public:
 	void unmapMemory(AllocationResult memoryAllocation);
 	void unmapAutomappedMemory();
 	void flushAutomappedMemory();
+	// --api-coverage=heavy: flushAutomappedMemory() with direct calls (flushMappedAllocationRange())
+	void flushAutomappedMemoryRanges(const WZ_vk::DispatchLoaderDynamic& vkDynLoader);
 	void clean();
 
 	// The most bytes used between two calls of clean(), that is, in one frame (a fixed-size ring needs this much).
@@ -974,6 +981,13 @@ private:
 	// GPU frame timing (a ring of timestamp query pairs, read a few frames late)
 	bool initGpuTimestampSupport();
 	void destroyGpuTimingQueryPool();
+	// --api-coverage=heavy: query the device, the surface, and the display with more of the API
+	void logApiCoverageInfo();
+	// --api-coverage=heavy: the GPU timestamp and the CPU clock at the same moment (VK_KHR_calibrated_timestamps)
+	void logCalibratedTimestamps();
+	bool calibratedTimestampsEnabled = false;
+	vk::TimeDomainKHR calibrationHostTimeDomain = vk::TimeDomainKHR::eDevice;
+	bool instanceExtensionEnabled(const char* extensionName) const;
 	void pollGpuFrameTimings();
 	/// Write the frame's begin timestamp on first use of the draw command buffer (must be outside a render pass)
 	void writeGpuTimingBeginIfNeeded(vk::CommandBuffer cmdBuffer);
