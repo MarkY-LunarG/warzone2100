@@ -46,6 +46,7 @@
 #include "lib/framework/physfs_ext.h"
 #include "lib/framework/wzapp.h"
 #include "gfx_api_webgpu.h"
+#include "screen.h"
 #include "shader_catalog.h"
 #include "png_util.h"
 #include "render_graph/attachment.h"
@@ -81,6 +82,17 @@ constexpr uint64_t UniformChunkSize = 1024 * 1024;
 constexpr uint64_t StreamedVertexChunkSize = 1024 * 1024;
 constexpr uint32_t LightDataStorageBinding = 14; // GLSL bindings (vk/pointlights.glsl)
 constexpr uint32_t LightIndexStorageBinding = 15;
+
+// The optional device features that WZ uses: texture formats, and timestamps for the GPU frame
+// timing of dynamic resolution
+constexpr wgpu::FeatureName OptionalDeviceFeatures[] = {
+	wgpu::FeatureName::TextureCompressionBC,
+	wgpu::FeatureName::TextureCompressionETC2,
+	wgpu::FeatureName::TextureCompressionASTC,
+	wgpu::FeatureName::Depth32FloatStencil8,
+	wgpu::FeatureName::TextureFormatsTier1,
+	wgpu::FeatureName::TimestampQuery
+};
 
 // The callback mode of the readback maps and of the asynchronous pipeline builds.
 // Native: the callbacks run in instance.ProcessEvents() at the end of the frame, on this thread.
@@ -317,6 +329,11 @@ bool uploadImage(const wgpu::Queue& queue, wgpu_image& target, size_t mip_level,
 	return true;
 }
 
+// --api-coverage=heavy: the live textures and buffers that the game made, for the memory totals of
+// getBackendGameInfo()
+std::set<const wgpu_image*> liveGameImages;
+std::set<const struct wgpu_buffer*> liveGameBuffers;
+
 // MARK: Texture objects
 
 enum class WgpuTextureKind : size_t
@@ -334,6 +351,9 @@ struct wgpu_texture final : public gfx_api::texture
 	wgpu_image image;
 	const wgpu::Queue* queue = nullptr;
 
+	wgpu_texture() { liveGameImages.insert(&image); }
+	~wgpu_texture() override { liveGameImages.erase(&image); }
+
 	void bind() override {}
 	bool upload(const size_t& mip_level, const iV_BaseImage& data) override { return uploadImage(*queue, image, mip_level, 0, 0, 0, data); }
 	bool upload_sub(const size_t& mip_level, const size_t& offset_x, const size_t& offset_y, const iV_BaseImage& data) override { return uploadImage(*queue, image, mip_level, offset_x, offset_y, 0, data); }
@@ -346,6 +366,9 @@ struct wgpu_texture_array final : public gfx_api::texture_array
 {
 	wgpu_image image;
 	const wgpu::Queue* queue = nullptr;
+
+	wgpu_texture_array() { liveGameImages.insert(&image); }
+	~wgpu_texture_array() override { liveGameImages.erase(&image); }
 
 	void bind() override {}
 	bool upload_layer(const size_t& layer, const size_t& mip_level, const iV_BaseImage& data) override
@@ -401,7 +424,14 @@ struct wgpu_buffer final : public gfx_api::buffer
 
 	explicit wgpu_buffer(const gfx_api::buffer::usage& _usage)
 	: usage(_usage)
-	{ }
+	{
+		liveGameBuffers.insert(this);
+	}
+
+	~wgpu_buffer() override
+	{
+		liveGameBuffers.erase(this);
+	}
 
 	void bind() override {}
 
@@ -669,7 +699,7 @@ public:
 	void debugPerfBegin(PERF_POINT pp, const char* descr) override {}
 	void debugPerfEnd(PERF_POINT pp) override {}
 	uint64_t debugGetPerfValue(PERF_POINT pp) override { return 0; }
-	std::map<std::string, std::string> getBackendGameInfo() override { return backendGameInfo; }
+	std::map<std::string, std::string> getBackendGameInfo() override;
 	const std::string& getFormattedRendererInfoString() const override { return formattedRendererInfoString; }
 	bool getScreenshot(std::function<void (std::unique_ptr<iV_Image>)> callback) override;
 	void handleWindowSizeChange(unsigned int oldWidth, unsigned int oldHeight, unsigned int newWidth, unsigned int newHeight) override;
@@ -714,13 +744,18 @@ private:
 	bool requestDevice();
 	bool readSurfaceCapabilities();
 #endif
-	void readDeviceFeatures();
+	// requestedFeatures: the features that the device was made with, or nullptr in the browser
+	void readDeviceFeatures(const std::vector<wgpu::FeatureName>* requestedFeatures);
+	// --api-coverage=heavy: log the features and the limits of the instance, the adapter and the device
+	void logApiCoverageInfo();
+	void destroyOwnedObjects();
 	void createDefaultResources();
 	optional<wgpu::PresentMode> presentModeFor(swap_interval_mode mode) const;
 	void configureSurface();
 	void presentClearedFrame();
 	[[noreturn]] void handleDeviceLost();
 	void startScreenshotReadback();
+	void mapScreenshotBuffer();
 	void finishScreenshotReadback();
 	void writeGpuTimingEnd();
 	void startGpuTimingReadback();
@@ -774,6 +809,7 @@ private:
 	bool surfaceNeedsConfigure = false;
 	// Set by the device-lost callback, which Dawn can call on a different thread
 	std::atomic<bool> deviceLost{false};
+	wgpu::Future lostFuture = {}; // --api-coverage=heavy, native: the device-lost future
 	swap_interval_mode swapMode = swap_interval_mode::vsync;
 
 	// Frame state
@@ -897,8 +933,9 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 #if defined(__EMSCRIPTEN__)
 	instance = wgpu::CreateInstance(nullptr);
 #else
-	// The device startup and the pipeline error check wait with WaitAny and a timeout
-	if (!wgpu::HasInstanceFeature(wgpu::InstanceFeatureName::TimedWaitAny))
+	// The device startup and the pipeline error check wait with WaitAny and a timeout.
+	// --api-coverage=heavy: check the instance feature before the instance asks for it.
+	if (uses_heavy_api_coverage && !wgpu::HasInstanceFeature(wgpu::InstanceFeatureName::TimedWaitAny))
 	{
 		debug(LOG_ERROR, "The WebGPU implementation cannot wait for a future (no TimedWaitAny instance feature)");
 		return false;
@@ -948,6 +985,11 @@ bool wgpu_context::_initialize(const gfx_api::backend_Impl_Factory& impl, int32_
 		return false;
 	}
 #endif
+
+	if (uses_heavy_api_coverage)
+	{
+		logApiCoverageInfo();
+	}
 
 	createDefaultResources();
 
@@ -999,7 +1041,7 @@ bool wgpu_context::initializeWebDevice()
 	device = wgpu::Device::Acquire(rawDevice);
 	queue = device.GetQueue();
 	device.GetLimits(&deviceLimits);
-	readDeviceFeatures();
+	readDeviceFeatures(nullptr);
 
 	wgpu::AdapterInfo info;
 	device.GetAdapterInfo(&info);
@@ -1098,16 +1140,9 @@ bool wgpu_context::requestDevice()
 	wgpu::Limits adapterLimits;
 	adapter.GetLimits(&adapterLimits);
 
-	// Ask for the optional features that the adapter has (texture formats, and timestamps for
-	// the GPU frame timing of dynamic resolution)
+	// Ask for the optional features that the adapter has
 	std::vector<wgpu::FeatureName> requiredFeatures;
-	for (wgpu::FeatureName feature : {
-		wgpu::FeatureName::TextureCompressionBC,
-		wgpu::FeatureName::TextureCompressionETC2,
-		wgpu::FeatureName::TextureCompressionASTC,
-		wgpu::FeatureName::Depth32FloatStencil8,
-		wgpu::FeatureName::TextureFormatsTier1,
-		wgpu::FeatureName::TimestampQuery })
+	for (wgpu::FeatureName feature : OptionalDeviceFeatures)
 	{
 		if (adapter.HasFeature(feature))
 		{
@@ -1156,24 +1191,129 @@ bool wgpu_context::requestDevice()
 
 	queue = device.GetQueue();
 	device.GetLimits(&deviceLimits);
-	readDeviceFeatures();
+	readDeviceFeatures(&requiredFeatures);
+	if (uses_heavy_api_coverage)
+	{
+		// beginScreenFrame checks the future, in addition to the device-lost callback
+		lostFuture = device.GetLostFuture();
+	}
 	return true;
 }
 #endif // defined(__EMSCRIPTEN__)
 
-void wgpu_context::readDeviceFeatures()
+void wgpu_context::readDeviceFeatures(const std::vector<wgpu::FeatureName>* requestedFeatures)
 {
-	// Ask the device: in the browser, the page selects the features (webgpu-postjs.js)
-	wgpu::SupportedFeatures features;
-	device.GetFeatures(&features);
 	enabledFeatures.clear();
-	std::string names;
-	for (size_t i = 0; i < features.featureCount; ++i)
+	if (uses_heavy_api_coverage)
 	{
-		enabledFeatures.insert(features.features[i]);
-		names += (names.empty() ? "" : ", ") + to_string(features.features[i]);
+		// --api-coverage=heavy: ask the device for the list of its features
+		wgpu::SupportedFeatures features;
+		device.GetFeatures(&features);
+		enabledFeatures.insert(features.features, features.features + features.featureCount);
+	}
+	else if (requestedFeatures)
+	{
+		// The device has the features that requestDevice asked for
+		enabledFeatures.insert(requestedFeatures->begin(), requestedFeatures->end());
+	}
+	else
+	{
+		// In the browser, the page selects the features (webgpu-postjs.js)
+		for (wgpu::FeatureName feature : OptionalDeviceFeatures)
+		{
+			if (device.HasFeature(feature))
+			{
+				enabledFeatures.insert(feature);
+			}
+		}
+	}
+
+	std::string names;
+	for (wgpu::FeatureName feature : enabledFeatures)
+	{
+		names += (names.empty() ? "" : ", ") + to_string(feature);
 	}
 	debug(LOG_3D, "WebGPU device features: %s", names.c_str());
+}
+
+void wgpu_context::logApiCoverageInfo()
+{
+	// Make the calls outside the debug() arguments: debug() does not evaluate them when the log
+	// category is off
+	wgpu::SupportedInstanceFeatures instanceFeatures;
+	wgpu::GetInstanceFeatures(&instanceFeatures);
+	wgpu::InstanceLimits instanceLimits;
+	const bool limitsRead = (wgpu::GetInstanceLimits(&instanceLimits) == wgpu::Status::Success);
+	const bool timedWaitAny = wgpu::HasInstanceFeature(wgpu::InstanceFeatureName::TimedWaitAny);
+	debug(LOG_3D, "WebGPU instance: %zu features, timed WaitAny %s, timedWaitAnyMaxCount %zu",
+		instanceFeatures.featureCount, timedWaitAny ? "yes" : "no",
+		limitsRead ? static_cast<size_t>(instanceLimits.timedWaitAnyMaxCount) : static_cast<size_t>(0));
+
+	wgpu::SupportedWGSLLanguageFeatures wgslFeatures;
+	instance.GetWGSLLanguageFeatures(&wgslFeatures);
+	const bool packedDotProduct = instance.HasWGSLLanguageFeature(wgpu::WGSLLanguageFeatureName::Packed4x8IntegerDotProduct);
+	debug(LOG_3D, "WebGPU WGSL: %zu language features, packed 4x8 integer dot product %s",
+		wgslFeatures.featureCount, packedDotProduct ? "yes" : "no");
+
+	if (adapter)
+	{
+		wgpu::SupportedFeatures adapterFeatures;
+		adapter.GetFeatures(&adapterFeatures);
+		debug(LOG_3D, "WebGPU adapter: %zu features", adapterFeatures.featureCount);
+	}
+
+	wgpu::AdapterInfo deviceAdapterInfo;
+	if (device.GetAdapterInfo(&deviceAdapterInfo) == wgpu::Status::Success)
+	{
+		debug(LOG_3D, "WebGPU device adapter: %s", to_std_string(deviceAdapterInfo.device).c_str());
+	}
+}
+
+// The bytes of a texture, from the properties that WebGPU gives
+static uint64_t textureMemorySize(const wgpu_image& image)
+{
+	const wgpu::Texture& texture = image.texture;
+	if (!texture || texture.GetDimension() != wgpu::TextureDimension::e2D || texture.GetFormat() == wgpu::TextureFormat::Undefined
+		|| texture.GetUsage() == wgpu::TextureUsage::None)
+	{
+		return 0;
+	}
+	uint64_t bytes = 0;
+	uint32_t width = texture.GetWidth();
+	uint32_t height = texture.GetHeight();
+	for (uint32_t level = 0; level < texture.GetMipLevelCount(); ++level)
+	{
+		bytes += gfx_api::format_memory_size(image.wzFormat, width, height);
+		width = std::max<uint32_t>(width >> 1, 1);
+		height = std::max<uint32_t>(height >> 1, 1);
+	}
+	return bytes * texture.GetDepthOrArrayLayers() * texture.GetSampleCount();
+}
+
+std::map<std::string, std::string> wgpu_context::getBackendGameInfo()
+{
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: the memory of the textures and the buffers that the game made
+		uint64_t textureBytes = 0;
+		for (const wgpu_image* image : liveGameImages)
+		{
+			textureBytes += textureMemorySize(*image);
+		}
+		uint64_t bufferBytes = 0;
+		for (const wgpu_buffer* buffer : liveGameBuffers)
+		{
+			if (buffer->object && buffer->object.GetUsage() != wgpu::BufferUsage::None)
+			{
+				bufferBytes += buffer->object.GetSize();
+			}
+		}
+		backendGameInfo["webgpu_texture_memory_kb"] = std::to_string(textureBytes / 1024);
+		backendGameInfo["webgpu_buffer_memory_kb"] = std::to_string(bufferBytes / 1024);
+		debug(LOG_3D, "WebGPU memory: textures %" PRIu64 " KiB in %zu textures, buffers %" PRIu64 " KiB in %zu buffers",
+			textureBytes / 1024, liveGameImages.size(), bufferBytes / 1024, liveGameBuffers.size());
+	}
+	return backendGameInfo;
 }
 
 void wgpu_context::createDefaultResources()
@@ -1324,6 +1464,15 @@ void wgpu_context::reconcileSwapchainAtFrameOpen()
 
 void wgpu_context::beginScreenFrame()
 {
+#if !defined(__EMSCRIPTEN__)
+	// --api-coverage=heavy: the device-lost future is complete when the device is lost. A timeout
+	// of 0 does not wait. (In the browser, the device belongs to no instance that can wait.)
+	if (lostFuture.id != 0 && instance && instance.WaitAny(lostFuture, 0) == wgpu::WaitStatus::Success)
+	{
+		lostFuture = {};
+		deviceLost = true;
+	}
+#endif
 	if (deviceLost)
 	{
 		handleDeviceLost();
@@ -1389,8 +1538,12 @@ bool wgpu_context::ensureEncoder()
 	{
 		encoder = device.CreateCommandEncoder();
 		encoderHasPass = false;
-		// One debug group holds the commands of the frame (finishScreenFrame closes it)
-		encoder.PushDebugGroup(astringf("Frame %zu", frameNum).c_str());
+		// --api-coverage=heavy: one debug group holds the commands of the frame
+		// (finishScreenFrame closes it)
+		if (uses_heavy_api_coverage)
+		{
+			encoder.PushDebugGroup(astringf("Frame %zu", frameNum).c_str());
+		}
 	}
 	return static_cast<bool>(encoder);
 }
@@ -1451,7 +1604,10 @@ void wgpu_context::finishScreenFrame()
 			{
 				writeGpuTimingEnd();
 			}
-			encoder.PopDebugGroup();
+			if (uses_heavy_api_coverage)
+			{
+				encoder.PopDebugGroup();
+			}
 			wgpu::CommandBuffer commands = encoder.Finish();
 			queue.Submit(1, &commands);
 		}
@@ -1495,6 +1651,11 @@ void wgpu_context::finishScreenFrame()
 	if (!_gpuFrameTimingEnabled && gpuTimingQuerySet)
 	{
 		releaseGpuTiming(); // timing was turned off during this frame
+	}
+	if (uses_heavy_api_coverage && frameNum % 600 == 0)
+	{
+		// --api-coverage=heavy: log the memory totals now and then (getBackendGameInfo)
+		getBackendGameInfo();
 	}
 	frameNum = std::max<size_t>(frameNum + 1, 1);
 	purgeFrameResources();
@@ -1748,6 +1909,19 @@ wgpu_shader_module* wgpu_context::getShaderModule(const std::string& path, wgpu:
 	moduleDesc.nextInChain = &source;
 	moduleDesc.label = path.c_str();
 	entry->module = device.CreateShaderModule(&moduleDesc);
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: log the messages of the WGSL compiler, without a wait
+		entry->module.GetCompilationInfo(FrameCallbackMode,
+			[path](wgpu::CompilationInfoRequestStatus status, const wgpu::CompilationInfo* compilationInfo) {
+				for (size_t m = 0; status == wgpu::CompilationInfoRequestStatus::Success && compilationInfo != nullptr && m < compilationInfo->messageCount; ++m)
+				{
+					const wgpu::CompilationMessage& message = compilationInfo->messages[m];
+					const code_part part = (message.type == wgpu::CompilationMessageType::Info) ? LOG_3D : LOG_WARNING;
+					debug(part, "%s:%llu: %s", path.c_str(), static_cast<unsigned long long>(message.lineNum), to_std_string(message.message).c_str());
+				}
+			});
+	}
 
 	wgpu_shader_module* result = entry.get();
 	shaderModules[path] = std::move(entry);
@@ -2174,6 +2348,25 @@ wgpu::RenderPipeline wgpu_context::buildPipelineVariant(wgpu_pipeline_state_obje
 		});
 	return wgpu::RenderPipeline(); // pending
 #else
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: build asynchronously, as in the browser. Native can wait in a frame,
+		// so no draw skips the pipeline, and the frames do not change. The callback reports the errors.
+		wgpu::RenderPipeline asyncPipeline;
+		instance.WaitAny(device.CreateRenderPipelineAsync(&desc, wgpu::CallbackMode::WaitAnyOnly,
+			[&](wgpu::CreatePipelineAsyncStatus status, wgpu::RenderPipeline pipeline, wgpu::StringView message) {
+				if (status == wgpu::CreatePipelineAsyncStatus::Success)
+				{
+					asyncPipeline = std::move(pipeline);
+				}
+				else
+				{
+					debug(LOG_ERROR, "Failed to create the WebGPU pipeline \"%s\": %s", shaderInfo.friendly_name, to_std_string(message).c_str());
+				}
+			}), UINT64_MAX);
+		return asyncPipeline;
+	}
+
 	// Find the validation errors here, not at the first draw
 	device.PushErrorScope(wgpu::ErrorFilter::Validation);
 	wgpu::RenderPipeline pipeline = device.CreateRenderPipeline(&desc);
@@ -3217,6 +3410,26 @@ bool wgpu_context::getScreenshot(std::function<void (std::unique_ptr<iV_Image>)>
 void wgpu_context::startScreenshotReadback()
 {
 	screenshotMapStarted = true;
+	if (uses_heavy_api_coverage)
+	{
+		// --api-coverage=heavy: start the map when the queue has done the copy. The map waits for
+		// the copy in any case, so the result is the same.
+		queue.OnSubmittedWorkDone(FrameCallbackMode,
+			[this](wgpu::QueueWorkDoneStatus status, wgpu::StringView message) {
+				if (status != wgpu::QueueWorkDoneStatus::Success || !screenshotBuffer)
+				{
+					screenshotMapStatus = wgpu::MapAsyncStatus::Aborted;
+					return;
+				}
+				mapScreenshotBuffer();
+			});
+		return;
+	}
+	mapScreenshotBuffer();
+}
+
+void wgpu_context::mapScreenshotBuffer()
+{
 	// The callback only keeps the status: it can run while the objects are released
 	screenshotBuffer.MapAsync(wgpu::MapMode::Read, 0, screenshotBuffer.GetSize(), FrameCallbackMode,
 		[this](wgpu::MapAsyncStatus status, wgpu::StringView message) {
@@ -3362,6 +3575,10 @@ void wgpu_context::releaseWebGPUObjects()
 	{
 		surfaceTexture.reset();
 	}
+	if (uses_heavy_api_coverage && device)
+	{
+		destroyOwnedObjects();
+	}
 	textureBindGroups.clear();
 	frameUniforms.clear();
 	uniformChunks.clear();
@@ -3396,6 +3613,43 @@ void wgpu_context::releaseWebGPUObjects()
 	device = nullptr;
 	adapter = nullptr;
 	instance = nullptr;
+}
+
+// --api-coverage=heavy: free the GPU memory of the buffers and the textures that the context owns now,
+// not when the last reference goes. This is at shutdown only: in a frame, the recorded commands can
+// still use an object.
+void wgpu_context::destroyOwnedObjects()
+{
+	for (auto* chunks : { &uniformChunks, &vertexChunks })
+	{
+		for (auto& chunk : *chunks)
+		{
+			if (chunk->buffer)
+			{
+				chunk->buffer.Destroy();
+			}
+		}
+	}
+	for (wgpu::Buffer* buffer : { &lightDataBuffer, &lightIndexBuffer, &zeroUniformBuffer })
+	{
+		if (*buffer)
+		{
+			buffer->Destroy();
+		}
+	}
+	const wgpu_image* defaultImages[] = {
+		defaultTexture ? &defaultTexture->image : nullptr,
+		defaultArrayTexture ? &defaultArrayTexture->image : nullptr,
+		defaultDepthTexture ? &defaultDepthTexture->image : nullptr,
+		defaultDepthArrayTexture ? &defaultDepthArrayTexture->image : nullptr
+	};
+	for (const wgpu_image* image : defaultImages)
+	{
+		if (image != nullptr && image->texture)
+		{
+			image->texture.Destroy();
+		}
+	}
 }
 
 void wgpu_context::shutdown()

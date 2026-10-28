@@ -60,6 +60,7 @@ void screenDumpToDisk(const char *path, const char *level);
 
 extern bool wz_texture_compression;
 extern bool uses_gfx_debug;
+extern bool uses_heavy_api_coverage; // --api-coverage=heavy: use more of the graphics API, for capture tools
 
 void screenDoDumpToDiskIfRequired();
 
